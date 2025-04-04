@@ -1,7 +1,7 @@
 requests
 flask
 nintendoclients>=2.1.0
-flask-limiter<=2.9.2 # Until 3.0 fixes "multiple values for argument 'key_func'"
+flask-limiter>=3.12
 gevent
 SQLAlchemy>=2.0
 Flask-SQLAlchemy>=3.1

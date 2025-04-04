@@ -1,6 +1,7 @@
 # Created by Deltaion Lee (MCMi460) on Github
 from flask import Flask, make_response, request, redirect, render_template, send_file
 from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 import sys, datetime, xmltodict, pickle, secrets
@@ -25,7 +26,11 @@ db.init_app(app)
 # (See above with `from database import *`)
 migrate = Migrate(app, db, target_metadata=Base.metadata)
 
-limiter = Limiter(app, key_func=lambda: request.access_route[-1])
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    storage_uri="memory://"
+)
 
 API_ENDPOINT: str = 'https://discord.com/api/v10'
 
