@@ -6,7 +6,6 @@ from sqlalchemy.orm import DeclarativeBase, mapped_column, Mapped, Session
 from sqlalchemy.types import DateTime, Integer, TypeDecorator, BigInteger
 import sys
 
-sys.path.append('../')
 from api.networks import NetworkType
 from api.private import DB_URL
 

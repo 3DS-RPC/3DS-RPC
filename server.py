@@ -7,13 +7,11 @@ import sys, datetime, xmltodict, pickle, secrets
 
 from sqlalchemy import select, update, insert, delete
 
-from database import *
-
-sys.path.append('../')
 from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST
 from api.public import pretendoBotFC, nintendoBotFC
 from api.networks import NetworkType, nameToNetworkType
+from database import *
 
 app = Flask(__name__)
 

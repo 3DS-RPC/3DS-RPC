@@ -1,7 +1,6 @@
 import sys, pickle
 from typing import Optional
 
-sys.path.append('../')
 from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST
 from api.networks import NetworkType

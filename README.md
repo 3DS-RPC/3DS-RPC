@@ -49,28 +49,8 @@ I'd like to thank:
   <img src = '/resources/tutorial2.gif' alt = "Tutorial GIF (which is STILL pronounced 'gif', not 'jif')" width = '50%' />
 </p>
 
-If you'd still like to use the Desktop Client instead of linking your Discord account, that's still an option! You can do so by following the instructions below:
-
-<details>
-  <summary><h3>Using the Desktop Client</h3></summary>
-
-  Download the app from the [latest release](https://github.com/MCMi460/3DS-RPC/releases) and run!  
-  Once ran, the app will ask for you to add a friend on your Nintendo 3DS. This is for the express purpose of pulling your currently playing Nintendo game.
-
-  1. Open Discord first, and then open 3DS-RPC
-
-  2. Add the bot's friend code provided
-
-  3. Enter your own friend code when prompted
-
-  4. Profit!
-    - Each update is around every ~30 seconds (keep in mind, the backend is updating at a different rate than the client, so this may vary). They are automatic, but it may take upwards of one minute after the program begins. To make certain that everything is in order, check your 3DS' friends list to verify the bot account has added you back.
-
-  <p align = 'center'>
-    <img src = '/resources/tutorial.gif' alt = "Tutorial GIF (which is pronounced 'gif', not 'jif')" />
-  </p>
-
-</details>
+If you'd still like to use the Desktop Client instead of linking your Discord account, that's still an option!
+Please visit its repository in [3DS-RPC-Desktop](https://github.com/3DS-RPC/3DS-RPC-Desktop).
 
 <h2 id = 'faq'>FAQ</h2>
 
@@ -92,19 +72,29 @@ If you'd still like to use the Desktop Client instead of linking your Discord ac
 
 <h2 id = 'building'>Building</h2>
 
-For Windows, run
-```bat
-cd .\3DS-RPC\client\scripts
-.\build.bat
+## Setup
+In brief, copy `api/template.private.py` to `api/private.py` and edit accordingly.
+
+## Database Migrations
+[Flask-Migrate](https://flask-migrate.readthedocs.io/en/latest/index.html) is used for database migrations.
+Please refer to its documentation for in-depth usage.
+
+Please note that `server.py` is the Flask application currently used for migrations.
+When interacting with `flask db`, you may have to specify it as the app:
 ```
-For MacOS, run
-```sh
-cd ./3DS-RPC/client/scripts
-chmod +x build.sh
-./build.sh
+flask --app server.py db [...]
 ```
 
-\*(Make sure you have `python3` and `pip` installed)
+As a general rule of thumb: whenever you see migrations added, please run them.
+You can do so via the following command:
+```
+flask db upgrade
+```
+
+To create migrations:
+```
+flask db migrate -m "Migration reason"
+```
 
 <h2 id = 'understanding'>Understanding</h2>
 
