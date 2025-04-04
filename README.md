@@ -114,9 +114,3 @@ So sit back, relax, and wait because, chances are, this guide is either unfinish
   ![just a diagram](/resources/diagram.png)
 
 </details>
-
-[cli]: /client/client.py
-[api]: /api/love.py
-[app]: /client/app.py
-[front]: /server/server.py
-[back]: /server/backend.py
