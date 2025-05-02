@@ -3,7 +3,3 @@
 from .public import * # public
 from .love import * # fc2pi
 from .util import * # utility
-# --
-# Following is unnecessary for production
-# from .main import * # main loop
-# --
