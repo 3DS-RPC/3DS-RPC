@@ -118,12 +118,29 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		await friends_client.update_comment('3dsrpc.com')
 
 	# Synchronize our current roster of friends.
+	# By bulk syncing friends, we can remove all existing friends,
+	# and then add our new friends with only one call.
 	#
-	# We expect the remote NEX implementation to remove all existing
-	# relationships, and replace them with the 100 PIDs specified.
-	# As of writing, both Nintendo and Pretendo support this.
+	# Although both Nintendo and Pretendo currently support
+	# the bulk `sync_friends` RPC call, Pretendo's
+	# implementation is not optimized, and overloads their servers.
 	all_friend_pids: list[int] = [ f.pid for f in current_rotation ]
-	await friends_client.sync_friend(0, all_friend_pids, [])
+	if network == NetworkType.PRETENDO:
+		# Clear our current, registered friends.
+		removables = await friends_client.get_all_friends()
+		for friend in removables:
+			time.sleep(delay)
+			await friends_client.remove_friend_by_principal_id(friend.pid)
+
+		# Individually add all pending friend PIDs.
+		for friend_pid in all_friend_pids:
+			time.sleep(delay)
+			await friends_client.add_friend_by_principal_id(0, friend_pid)
+	else:
+		# We expect the remote NEX implementation to remove all existing
+		# relationships, and replace them with the 100 PIDs specified.
+		# This path is currently only for Nintendo.
+		await friends_client.sync_friend(0, all_friend_pids, [])
 
 	time.sleep(delay)
 
