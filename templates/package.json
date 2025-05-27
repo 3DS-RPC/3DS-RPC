@@ -17,13 +17,13 @@
         "David Miller (https://davidmiller.io/)"
     ],
     "dependencies": {
-        "bootstrap": "5.3.5"
+        "bootstrap": "5.3.6"
     },
     "devDependencies": {
         "autoprefixer": "10.4.21",
         "postcss": "8.5.3",
         "prettier": "3.5.3",
         "pug": "3.0.3",
-        "sass": "1.87.0"
+        "sass": "1.89.0"
     }
 }
