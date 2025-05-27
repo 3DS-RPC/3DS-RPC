@@ -10,8 +10,8 @@ from sqlalchemy import select, update, insert, delete
 
 from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST
-from api.public import pretendoBotFC, nintendoBotFC
-from api.networks import NetworkType, nameToNetworkType
+from api.public import PRETENDO_BOT_FC, NINTENDO_BOT_FC
+from api.networks import NetworkType, name_to_network_type
 from database import *
 
 app = Flask(__name__)
@@ -117,9 +117,9 @@ def cache_titles():
 # Create entry in database with friendCode
 def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
     # Make sure the user isn't trying to create any registered bot friend code.
-    if int(friend_code) == int(pretendoBotFC):
+    if int(friend_code) == int(PRETENDO_BOT_FC):
         raise Exception('invalid FC')
-    if int(friend_code) == int(nintendoBotFC):
+    if int(friend_code) == int(NINTENDO_BOT_FC):
         raise Exception('invalid FC')
 
     try:
@@ -617,7 +617,7 @@ def user_page(friend_code: str):
     network: NetworkType
 
     try:
-        network = nameToNetworkType(request.args.get('network'))
+        network = name_to_network_type(request.args.get('network'))
 
         friend_code_int = int(friend_code.replace('-', ''))
         user_data = get_presence(friend_code_int, network, False)
@@ -670,7 +670,7 @@ def new_user(friend_code: int, network: int = -1, user_check: bool = True):
 
             try:
                 request_arg = request.data.decode('utf-8').split(',')[0]
-                network = nameToNetworkType(request_arg)
+                network = name_to_network_type(request_arg)
             except:
                 pass            
         create_user(friend_code, network, True)
@@ -692,7 +692,7 @@ def user_presence(friend_code: int):
     # Check if a specific network is being specified as a query parameter.
     network_name = request.args.get('network')
     if network_name:
-        network = nameToNetworkType(network_name)
+        network = name_to_network_type(network_name)
     else:
         network = NetworkType.NINTENDO
 
@@ -705,7 +705,7 @@ def user_presence(friend_code: int):
 def toggler(friend_code: int):
     network = NetworkType.NINTENDO
     if request.data.decode('utf-8').split(',')[2]:
-        network = nameToNetworkType(request.data.decode('utf-8').split(',')[2])
+        network = name_to_network_type(request.data.decode('utf-8').split(',')[2])
     try:
         fc = str(principal_id_to_friend_code(friend_code_to_principal_id(friend_code))).zfill(12)
     except:
@@ -782,7 +782,7 @@ def deleter(friend_code: int):
 
     data = request.data.decode('utf-8').split(',')
     token = data[0]
-    network = nameToNetworkType(data[1])
+    network = name_to_network_type(data[1])
     discord_id = user_from_token(token).id
 
     db.session.execute(

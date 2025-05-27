@@ -1,5 +1,5 @@
 from enum import IntEnum
-from api.public import nintendoBotFC, pretendoBotFC
+from api.public import NINTENDO_BOT_FC, PRETENDO_BOT_FC
 
 
 class InvalidNetworkError(Exception):
@@ -15,9 +15,12 @@ class NetworkType(IntEnum):
         """Returns the configured friend code for this network type."""
         match self:
             case self.NINTENDO:
-                return nintendoBotFC
+                return NINTENDO_BOT_FC
             case self.PRETENDO:
-                return pretendoBotFC
+                return PRETENDO_BOT_FC
+
+        # Default to Nintendo.
+        return NINTENDO_BOT_FC
 
     def column_name(self) -> str:
         """Returns the database column name for this network type."""
@@ -27,12 +30,15 @@ class NetworkType(IntEnum):
             case self.PRETENDO:
                 return "pretendo_friends"
 
+        # Default to Nintendo.
+        return "nintendo_friends"
+
     def lower_name(self) -> str:
         """Returns a lowercase name of this enum member's name for API compatibility."""
         return self.name.lower()
 
 
-def nameToNetworkType(network_name: str) -> NetworkType:
+def name_to_network_type(network_name: str) -> NetworkType:
     # Assume Nintendo Network as a fallback.
     if network_name is None:
         return NetworkType.NINTENDO
