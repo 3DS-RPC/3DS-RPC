@@ -86,32 +86,79 @@ def cache_titles():
             t = pickle.loads(file.read())
             title_database = t[0]
             titles_to_uid = t[1]
-    else:
-        title_database = []
-        titles_to_uid = []
+            return
 
-        # Create progress bar
-        bar = ProgressBar()
+    title_database = []
+    titles_to_uid = []
 
-        for region in ['US', 'JP', 'GB', 'KR', 'TW']:
-            title_database.append(
-                xmltodict.parse(requests.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region, verify = False).text)
-            )
+    # Create progress bar
+    bar = ProgressBar()
 
-            # Update progress bar as database requests complete
-            bar.update(.5 / 5)
-            titles_to_uid += requests.get('https://raw.githubusercontent.com/hax0kartik/3dsdb/master/jsons/list_%s.json' % region).json()
-            bar.update(.5 / 5)
+    for region in ['US', 'JP', 'GB', 'KR', 'TW']:
+        title_database.append(
+            xmltodict.parse(requests.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region, verify = False).text)
+        )
 
-        bar.end() # End the progress bar
+        # Update progress bar as database requests complete
+        bar.update(.5 / 5)
+        titles_to_uid += requests.get('https://raw.githubusercontent.com/hax0kartik/3dsdb/master/jsons/list_%s.json' % region).json()
+        bar.update(.5 / 5)
 
-        # Save databases to file
-        with open(database_path, 'wb') as file:
-            file.write(pickle.dumps(
-                (title_database,
-                 titles_to_uid)
-            ))
-        print('[Saved database to file]')
+    bar.end() # End the progress bar
+
+    # We now have an array of dictionaries in the following structure:
+    # {
+    #   "eshop": {
+    #     "contents": {
+    #       "content": [ ... ],
+    #     }
+    #   }
+    # }
+    #
+    # TODO(spotlightishere): Normalize this.
+    for page_index, eshop_page in enumerate(title_database):
+        all_page_titles = eshop_page["eshop"]["contents"]["content"]
+        for title_index, title in enumerate(all_page_titles):
+            shop_title = title["title"]
+            title_name = shop_title["name"]
+
+            if "<br>" not in title_name:
+                continue
+
+            # Occasionally, some titles will contain a newline
+            # alongside the HTML element "<br>".
+            #
+            # First, remove our newline.
+            fixed_title_name = title_name.replace("\n", "")
+            # Replace a leading space, newline, and <br> with a single space.
+            fixed_title_name = fixed_title_name.replace(" <br>", " ")
+            # A <br> with a following newline must similarly be a space.
+            fixed_title_name = fixed_title_name.replace("<br>", " ")
+            # # If we now have double spaces, normalize this.
+            fixed_title_name = fixed_title_name.replace("  ", " ")
+
+            title_database[page_index]["eshop"]["contents"]["content"][title_index]["title"]["name"] = fixed_title_name
+
+    # Next, we do the same for the reverse.
+    for entry_index, title_entry in enumerate(titles_to_uid):
+        title_name = title_entry["Name"]
+        if "<br>" not in title_name:
+            continue
+
+        # Do the same as the above.
+        fixed_title_name = title_name.replace("\n", "")
+        fixed_title_name = fixed_title_name.replace(" <br>", " ")
+        fixed_title_name = fixed_title_name.replace("<br>", " ")
+        fixed_title_name = fixed_title_name.replace("  ", " ")
+        titles_to_uid[entry_index]["Name"] = fixed_title_name
+
+    # Save databases to file
+    with open(database_path, 'wb') as file:
+        file.write(pickle.dumps(
+            (title_database,
+             titles_to_uid)
+        ))
+    print('[Saved database to file]')
 
 
 # Create entry in database with friendCode
