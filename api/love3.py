@@ -8,11 +8,12 @@
 from Cryptodome.Cipher import AES
 import Cryptodome.Cipher.AES
 from binascii import hexlify, unhexlify
-import requests, io, math, json, os
+import asyncio, io, math, json, os
 from PIL import Image
+from server import client
 
-def getTitleData(titleID:hex):
-	data = requests.get('https://idbe-ctr.cdn.nintendo.net/icondata/10/%s.idbe' % titleID.zfill(16), verify = False).content
+async def getTitleData(titleID:hex):
+	data = (await client.get('https://idbe-ctr.cdn.nintendo.net/icondata/10/%s.idbe' % titleID.zfill(16), verify = False)).content
 
 	IV = unhexlify('A46987AE47D82BB4FA8ABC0450285FA4')
 
@@ -29,7 +30,7 @@ def getTitleData(titleID:hex):
 
 	return decipher.decrypt(data[2:])
 
-def getTitleInfo(titleID:hex):
+async def getTitleInfo(titleID:hex):
 	titleID = str(titleID)
 	try:
 		int(titleID, 16) # Errors if not HEX
@@ -48,7 +49,7 @@ def getTitleInfo(titleID:hex):
 			return json.loads(file.read())
 
 	try:
-		data = getTitleData(titleID)
+		data = await getTitleData(titleID)
 	except:
 		with open('cache/homebrew' + titleID + '.txt', 'w') as file:
 			file.write('')

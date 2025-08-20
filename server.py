@@ -1,4 +1,7 @@
 # Created by Deltaion Lee (MCMi460) on Github
+import asyncio
+
+import httpx
 from flask import Flask, make_response, request, redirect, render_template, send_file
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -43,6 +46,8 @@ frontend_uptime = datetime.datetime.now()
 start_db_time(None, NetworkType.NINTENDO)
 start_db_time(None, NetworkType.PRETENDO)
 
+client = httpx.AsyncClient()
+"Httpx client for asynchronous requests (Previously handled synchronously with Requests)"
 
 @app.errorhandler(404)
 def handler404(e):
@@ -73,7 +78,7 @@ requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.
 
 
 # Create title cache
-def cache_titles():
+async def cache_titles():
     global title_database, titles_to_uid
 
     # Pull databases
@@ -96,12 +101,12 @@ def cache_titles():
 
     for region in ['US', 'JP', 'GB', 'KR', 'TW']:
         title_database.append(
-            xmltodict.parse(requests.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region, verify = False).text)
+            xmltodict.parse((await client.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region)).text)
         )
 
         # Update progress bar as database requests complete
         bar.update(.5 / 5)
-        titles_to_uid += requests.get('https://raw.githubusercontent.com/hax0kartik/3dsdb/master/jsons/list_%s.json' % region).json()
+        titles_to_uid += (await client.get('https://raw.githubusercontent.com/hax0kartik/3dsdb/master/jsons/list_%s.json' % region)).json()
         bar.update(.5 / 5)
 
     bar.end() # End the progress bar
@@ -202,7 +207,7 @@ def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
             db.session.commit()
 
 
-def fetch_bearer_token(code: str):
+async def fetch_bearer_token(code: str):
     data = {
         'client_id': '%s' % CLIENT_ID,
         'client_secret': '%s' % CLIENT_SECRET,
@@ -213,12 +218,12 @@ def fetch_bearer_token(code: str):
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
+    r = await client.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
     r.raise_for_status()
     return r.json()
 
 
-def refresh_bearer(token: str):
+async def refresh_bearer(token: str):
     user = user_from_token(token)
     data = {
         'client_id': '%s' % CLIENT_ID,
@@ -229,9 +234,9 @@ def refresh_bearer(token: str):
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
+    r = await client.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
     r.raise_for_status()
-    token, user, pfp = create_discord_user('', r.json())
+    token, user, pfp = await create_discord_user('', r.json())
     return token, user, pfp
 
 
@@ -249,13 +254,13 @@ def user_from_token(token: str) -> Discord:
     return result
 
 
-def create_discord_user(code: str, response: dict = None):
+async def create_discord_user(code: str, response: dict = None):
     if not response:
-        response = fetch_bearer_token(code)
+        response = await fetch_bearer_token(code)
     headers = {
         'Authorization': 'Bearer %s' % response['access_token'],
     }
-    new = requests.get('https://discord.com/api/users/@me', headers=headers)
+    new = await client.get('https://discord.com/api/users/@me', headers=headers)
     user = new.json()
     token = secrets.token_hex(20)
     try:
@@ -869,8 +874,8 @@ def settings_toggler(which: str):
 # Make Nintendo's cert a 'secure' cert
 @app.route('/cdn/i/<string:file>/', methods=['GET'])
 @limiter.limit(cdn_limit)
-def cdn_image(file: str):
-    response = make_response(requests.get('https://kanzashi-ctr.cdn.nintendo.net/i/%s' % file, verify=False).content)
+async def cdn_image(file: str):
+    response = make_response((await client.get('https://kanzashi-ctr.cdn.nintendo.net/i/%s' % file)).content)
     response.headers['Content-Type'] = 'image/jpeg'
     return response
 
@@ -902,10 +907,10 @@ def login():
 # Discord route
 @app.route('/authorize')
 @limiter.limit(new_user_limit)
-def authorize():
+async def authorize():
     if not request.args.get('code'):
         return render_template('dist/404.html')
-    token, user, pfp = create_discord_user(request.args['code'])
+    token, user, pfp = await create_discord_user(request.args['code'])
     response = make_response(redirect('/consoles'))
     response.set_cookie('token', token, expires=datetime.datetime.now() + datetime.timedelta(days=30))
     response.set_cookie('user', user, expires=datetime.datetime.now() + datetime.timedelta(days=30))
@@ -914,10 +919,10 @@ def authorize():
 
 
 @app.route('/refresh')
-def refresh():
+async def refresh():
     if local:
         try:
-            token, user, pfp = refresh_bearer(request.cookies['token'])
+            token, user, pfp = await refresh_bearer(request.cookies['token'])
             response = make_response(redirect('/consoles'))
             response.set_cookie('token', token, expires=datetime.datetime.now() + datetime.timedelta(days=30))
             response.set_cookie('user', user, expires=datetime.datetime.now() + datetime.timedelta(days=30))
@@ -928,8 +933,9 @@ def refresh():
     return redirect('/404.html')
 
 
+
 if __name__ == '__main__':
-    cache_titles()
+    asyncio.run(cache_titles())
     if local:
         app.run(host='0.0.0.0', port=port)
     else:
