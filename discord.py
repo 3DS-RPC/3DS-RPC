@@ -8,10 +8,10 @@ from api.networks import NetworkType
 
 from sqlalchemy import create_engine, select, update, delete
 from sqlalchemy.orm import Session
-from database import get_db_url, DiscordFriends, Friend
+from database import get_db_url, DiscordFriends, Friend, Discord
 from database import Discord as DiscordTable
 from dataclasses import dataclass
-from requests.exceptions import HTTPError
+from httpx import HTTPStatusError
 
 API_ENDPOINT: str = 'https://discord.com/api/v10'
 
@@ -120,8 +120,8 @@ class APIClient:
                     activity_data[key_name] = activity_data[key_name][:128]
 
         data = {'activities': [activity_data]}
-        if discord_user.rpc_session_token:
-            data['token'] = discord_user.rpc_session_token
+        if self.current_user.rpc_session_token:
+            data['token'] = self.current_user.rpc_session_token
 
         headers = {
             'Authorization': 'Bearer %s' % self.current_user.bearer_token,
@@ -133,7 +133,7 @@ class APIClient:
 
         response = r.json()
         DiscordSession().create(self.current_user.refresh_token, response['token'])
-
+        return None
 
     async def reset_presence(self):
         if not self.current_user.rpc_session_token:
@@ -154,7 +154,7 @@ class APIClient:
 
         try:
             r.raise_for_status()
-        except HTTPError as e:
+        except HTTPStatusError as e:
             # If we encounter 400, we assume that this session has already expired.
             # Let's go ahead and reset the session anyway.
             if e.response.status_code == 400:
@@ -203,12 +203,10 @@ delay = 2
 
 async def main():
     while True:
-        # First, refresh all OAuth2 bearer tokens if necessary.
-        all_users = session.scalars(select(DiscordTable)).all()
-        for oauth_user in all_users:
+        async def refresh_user(oauth_user: Discord):
             # We only need to refresh 30 minutes before the token expires.
             if time.time() - oauth_user.generation_date < 604800 - 1800:
-                continue
+                return
 
             # Any HTTP error expected here is a 403.
             # This would mean that the refresh token is now invalid,
@@ -217,8 +215,12 @@ async def main():
             try:
                 await api_client.refresh_bearer()
                 await asyncio.sleep(delay * 2)
-            except HTTPError:
+            except HTTPStatusError:
                 api_client.delete_discord_user()
+
+        # First, asynchronously refresh all OAuth2 bearer tokens if necessary.
+        all_users = session.scalars(select(DiscordTable))
+        await asyncio.gather(*[refresh_user(oauth_user) for oauth_user in all_users])
 
         # Inactive users have removed our bot: the backend removed them
         # from both `friends` and `discord_friends`, but they still
@@ -231,35 +233,37 @@ async def main():
                 .filter(DiscordFriends.id == None)
                 .filter(DiscordTable.rpc_session_token != None)
         )
-        inactive_users = session.scalars(inactive_query).all()
+        inactive_users = session.scalars(inactive_query)
 
-        if len(inactive_users) > 0:
-            print('[INACTIVES] Handling %s' % len(inactive_users))
+        if inactive_users.one_or_none() is not None:
+            print('[INACTIVES] Handling inactive users')
 
-        for inactive_user in inactive_users:
+        async def reset_inactive_presence(inactive_user: Discord):
             api_client = APIClient(inactive_user)
             try:
                 print('[INACTIVES] Resetting %s' % inactive_user.id)
                 await api_client.reset_presence()
                 await asyncio.sleep(delay)
-            except HTTPError as e:
+            except HTTPStatusError as e:
                 print(f"[INACTIVE RESET FAILURE] {e}")
                 # api_client.delete_discord_user()
 
+        # asynchronously update inactive users before continuing
+        await asyncio.gather(*[reset_inactive_presence(inactive_user) for inactive_user in inactive_users])
         await asyncio.sleep(delay)
 
         # Finally, we'll refresh presences for all remaining users.
-        discord_friends = session.scalars(select(DiscordFriends).where(DiscordFriends.active)).all()
+        discord_friends = session.scalars(select(DiscordFriends).where(DiscordFriends.active))
 
-        if len(discord_friends) < 1:
+        if discord_friends.one_or_none() is not None:
             await asyncio.sleep(delay)
             continue
 
-        for discord_friend in discord_friends:
+        async def refresh_active_users_presence(discord_friend):
             # If we've updated this user within the past minute, there's no need to update again.
             discord_user = session.scalar(select(DiscordTable).where(DiscordTable.id == discord_friend.id))
             if time.time() - discord_user.last_accessed < 60:
-                continue
+                return
 
             # If this user has no friend data, we cannot process them.
             friend_data: Friend = session.scalar(
@@ -268,7 +272,7 @@ async def main():
                 .where(Friend.network == discord_friend.network)
             )
             if not friend_data:
-                continue
+                return
 
             api_client = APIClient(discord_user)
 
@@ -276,19 +280,22 @@ async def main():
                 # If the user is offline, and they lack an RPC session,
                 # there's nothing for us to do.
                 if not discord_user.rpc_session_token:
-                    continue
+                    return
 
                 # Remove our presence for this now-offline user.
                 try:
-                    print('[FRIENDS] Resetting presence for %s on %s' % (friend_data.friend_code, friend_data.network.lower_name()))
+                    print('[FRIENDS] Resetting presence for %s on %s' % (friend_data.friend_code,
+                                                                         friend_data.network.lower_name()))
                     await api_client.reset_presence()
                     await asyncio.sleep(delay)
-                except HTTPError as e:
+                except HTTPStatusError as e:
                     print(f"[FRIEND RESET FAILURE] {e}")
                     # api_client.delete_discord_user()
-                continue
+                return
 
-            print('[FRIENDS] Creating RPC for Discord ID %s - %s on %s]' % (discord_friend.id, discord_friend.friend_code, discord_friend.network.lower_name()))
+            print(
+                '[FRIENDS] Creating RPC for Discord ID %s - %s on %s]' % (discord_friend.id, discord_friend.friend_code,
+                                                                          discord_friend.network.lower_name()))
             principal_id = friend_code_to_principal_id(friend_data.friend_code)
             mii = friend_data.mii
             if mii:
@@ -296,7 +303,7 @@ async def main():
 
             try:
                 friend_code = str(principal_id_to_friend_code(principal_id)).zfill(12)
-                title_data = getTitle(friend_data.title_id, titlesToUID, titleDatabase)
+                title_data = await getTitle(friend_data.title_id, titlesToUID, titleDatabase)
 
                 discord_user_data = UserData(
                     friend_code=friend_code,
@@ -310,10 +317,13 @@ async def main():
 
                 await api_client.update_presence(discord_user_data, discord_friend.network)
                 await asyncio.sleep(delay)
-            except HTTPError as e:
+            except HTTPStatusError as e:
                 print(f"[FRIEND PRESENCE FAILURE] {e}")
                 # api_client.delete_discord_user()
             await asyncio.sleep(delay)
+
+        # Asynchronously update every presence of active users
+        await asyncio.gather(*[refresh_active_users_presence(discord_friend) for discord_friend in discord_friends])
 
         # Sleep for 5x our delay.
         await asyncio.sleep(delay * 5)

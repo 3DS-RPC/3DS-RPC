@@ -7,7 +7,8 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
-import sys, datetime, xmltodict, pickle, secrets
+import sys, datetime, xmltodict, pickle, secrets, os
+
 
 from sqlalchemy import select, update, insert, delete
 
@@ -46,7 +47,7 @@ frontend_uptime = datetime.datetime.now()
 start_db_time(None, NetworkType.NINTENDO)
 start_db_time(None, NetworkType.PRETENDO)
 
-client = httpx.AsyncClient()
+client = httpx.AsyncClient(verify=False)
 "Httpx client for asynchronous requests (Previously handled synchronously with Requests)"
 
 @app.errorhandler(404)
@@ -74,9 +75,6 @@ toggler_limit = '5/minute'
 title_database = []
 titles_to_uid = []
 
-requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
-
-
 # Create title cache
 async def cache_titles():
     global title_database, titles_to_uid
@@ -101,7 +99,7 @@ async def cache_titles():
 
     for region in ['US', 'JP', 'GB', 'KR', 'TW']:
         title_database.append(
-            xmltodict.parse((await client.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region)).text)
+            xmltodict.parse((await client.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region, ver)).text)
         )
 
         # Update progress bar as database requests complete
@@ -360,7 +358,7 @@ def user_agent_check():
         raise Exception('this client is invalid')
 
 
-def get_presence(friend_code: int, network: NetworkType, is_api: bool):
+async def get_presence(friend_code: int, network: NetworkType, is_api: bool):
     try:
         if is_api:
             # First, run 3DS-RPC client checks.
@@ -391,7 +389,7 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
                 'updateID': result.upd_id,
                 'joinable': result.joinable,
                 'gameDescription': result.game_description,
-                'game': getTitle(result.title_id, titles_to_uid, title_database),
+                'game': await getTitle(result.title_id, titles_to_uid, title_database),
                 'disclaimer': 'all information regarding the title (User/Presence/game) is downloaded from Nintendo APIs',
             }
         else:
@@ -429,7 +427,7 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
 
 # Index page
 @app.route('/')
-def index():
+async def index():
     stmt = (
         select(Friend)
         .where(Friend.online == True)
@@ -439,14 +437,19 @@ def index():
     results = db.session.scalars(stmt).all()
     num = len(results)
     data = sidenav()
-    data['active'] = [({
-        'mii': MiiData().mii_studio_url(user.mii),
-        'username': user.username,
-        'game': getTitle(user.title_id, titles_to_uid, title_database),
-        'friendCode': user.friend_code.zfill(12),
-        'joinable': user.joinable,
-        'network': user.network.lower_name(),
-    }) for user in results if user.username]
+    for user in results:
+        if user.username:
+            game = await getTitle(user.title_id, titles_to_uid, title_database)
+
+            data['active'] += {
+                'mii': MiiData().mii_studio_url(user.mii),
+                'username': user.username,
+                'game': game,
+                'friendCode': user.friend_code.zfill(12),
+                'joinable': user.joinable,
+                'network': user.network.lower_name(),
+            }
+
     data['active'] = data['active'][:2]
 
     stmt = (
@@ -455,16 +458,21 @@ def index():
         .order_by(Friend.account_creation.desc())
         .limit(6)
         )
-    results = db.session.scalars(stmt).all()
+    results = db.session.scalars(stmt)
 
-    data['new'] = [({
-        'mii': MiiData().mii_studio_url(user.mii),
-        'username': user.username,
-        'game': getTitle(user.title_id, titles_to_uid, title_database) if user.online and user.title_id != 0 else '',
-        'friendCode': user.friend_code.zfill(12),
-        'joinable': user.joinable,
-        'network': user.network.lower_name(),
-    }) for user in results if user.username]
+    for user in results:
+        if user.username:
+            game = await getTitle(user.title_id, titles_to_uid, title_database) if user.online and user.title_id != 0 else ''
+
+            data['new'] += {
+                    'mii': MiiData().mii_studio_url(user.mii),
+                    'username': user.username,
+                    'game': game,
+                    'friendCode': user.friend_code.zfill(12),
+                    'joinable': user.joinable,
+                    'network': user.network.lower_name(),
+                }
+
     data['new'] = data['new'][:2]
 
     data['num'] = num
@@ -523,7 +531,7 @@ def settings_redirect():
 
 # Roster page
 @app.route('/roster')
-def roster():
+async def roster():
     stmt = (
         select(Friend)
         .where(Friend.username != None)
@@ -535,14 +543,18 @@ def roster():
     data = sidenav()
 
     data['title'] = 'New Users'
-    data['users'] = [({
-        'mii': MiiData().mii_studio_url(user.mii),
-        'username': user.username,
-        'game': getTitle(user.title_id, titles_to_uid, title_database),
-        'friendCode': user.friend_code.zfill(12),
-        'joinable': user.joinable,
-        'network': user.network.lower_name(),
-    }) for user in results if user.username]
+    for user in results:
+        if user.username:
+            game = await getTitle(user.title_id, titles_to_uid, title_database)
+
+            data['users'] += {
+                'mii': MiiData().mii_studio_url(user.mii),
+                'username': user.username,
+                'game': game,
+                'friendCode': user.friend_code.zfill(12),
+                'joinable': user.joinable,
+                'network': user.network.lower_name(),
+            }
 
     response = make_response(render_template('dist/users.html', data=data))
     return response
@@ -550,7 +562,7 @@ def roster():
 
 # Active page
 @app.route('/active')
-def active():
+async def active():
     stmt = (
         select(Friend)
         .where(Friend.username != None)
@@ -562,14 +574,18 @@ def active():
     data = sidenav()
     data['title'] = 'Active Users'
 
-    data['users'] = [({
-        'mii': MiiData().mii_studio_url(user.mii),
-        'username': user.username,
-        'game': getTitle(user.title_id, titles_to_uid, title_database),
-        'friendCode': user.friend_code.zfill(12),
-        'joinable': user.joinable,
-        'network': user.network.lower_name(),
-    }) for user in results if user.username]
+    for user in results:
+        if user.username:
+            game = await getTitle(user.title_id, titles_to_uid, title_database)
+
+            data['users'] += {
+                'mii': MiiData().mii_studio_url(user.mii),
+                'username': user.username,
+                'game': game,
+                'friendCode': user.friend_code.zfill(12),
+                'joinable': user.joinable,
+                'network': user.network.lower_name(),
+            }
 
     response = make_response(render_template('dist/users.html', data=data))
     return response
@@ -665,14 +681,14 @@ def consoles():
 
 
 @app.route('/user/<string:friend_code>/')
-def user_page(friend_code: str):
+async def user_page(friend_code: str):
     network: NetworkType
 
     try:
         network = name_to_network_type(request.args.get('network'))
 
         friend_code_int = int(friend_code.replace('-', ''))
-        user_data = get_presence(friend_code_int, network, False)
+        user_data = await get_presence(friend_code_int, network, False)
         if user_data['Exception'] or not user_data['User']['username']:
             raise Exception(user_data['Exception'])
     except:
@@ -680,7 +696,7 @@ def user_page(friend_code: str):
 
     if not user_data['User']['online'] or not user_data['User']['Presence']:
         user_data['User']['Presence']['game'] = None
-    user_data['User']['favoriteGame'] = getTitle(user_data['User']['favoriteGame'], titles_to_uid, title_database)
+    user_data['User']['favoriteGame'] = await getTitle(user_data['User']['favoriteGame'], titles_to_uid, title_database)
     user_data['User']['network'] = network.lower_name()
     if user_data['User']['favoriteGame']['name'] == 'Home Screen':
         user_data['User']['favoriteGame'] = None
@@ -713,7 +729,7 @@ def terms():
 # Create entry in database with friendCode
 @app.route('/api/user/create/<int:friend_code>/', methods=['POST'])
 @limiter.limit(new_user_limit)
-def new_user(friend_code: int, network: int = -1, user_check: bool = True):
+def new_user(friend_code: int, network: NetworkType = -1, user_check: bool = True):
     try:
         if user_check:
             user_agent_check()
@@ -932,13 +948,14 @@ async def refresh():
             delete_discord_user(user_from_token(request.cookies['token']).id)
     return redirect('/404.html')
 
-
-
-if __name__ == '__main__':
-    asyncio.run(cache_titles())
+async def main():
+    await cache_titles()
     if local:
         app.run(host='0.0.0.0', port=port)
     else:
         import gevent.pywsgi
         server = gevent.pywsgi.WSGIServer(('0.0.0.0', port), app)
         server.serve_forever()
+
+if __name__ == '__main__':
+    asyncio.run(main())
