@@ -30,7 +30,7 @@ class ProgressBar(): # Written with help from https://stackoverflow.com/a/316081
         self.progress = 0
         self.close = True
 
-    def update(self, fraction:float):
+    def update(self, fraction:float): # TODO: Async this
         fraction = int(fraction * self.width)
         self.progress += fraction
         def loop(self):
@@ -43,7 +43,7 @@ class ProgressBar(): # Written with help from https://stackoverflow.com/a/316081
             self.close = True
         threading.Thread(target = loop, args = (self,)).start()
 
-    def end(self): # Can take up time on main thread to finish
+    def end(self): # Can take up time on main thread to finish TODO: Async this
         for n in range(self.width - self.progress):
             sys.stdout.write('#')
             sys.stdout.flush()
@@ -53,7 +53,7 @@ class ProgressBar(): # Written with help from https://stackoverflow.com/a/316081
         sys.stdout.write(']\n')
 
 # Get image url from title ID
-def getTitle(titleID, titlesToUID, titleDatabase):
+async def getTitle(titleID, titlesToUID, titleDatabase):
     _pass = None
 
     uid = None
@@ -104,7 +104,7 @@ def getTitle(titleID, titlesToUID, titleDatabase):
             game[key] = _template[key]
 
     if game == _template:
-        response = getTitleInfo(titleID)
+        response = await getTitleInfo(titleID)
         if response:
             game['name'] = response['short']
             game['publisher']['name'] = response['publisher']
