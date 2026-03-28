@@ -114,7 +114,7 @@ async def main():
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
 	# If we recently started, update our comment, and remove existing friends.
 	if time.time() - backend_start_time < 30:
-		time.sleep(delay)
+		await anyio.sleep(delay)
 		await friends_client.update_comment('3dsrpc.com')
 
 	# Synchronize our current roster of friends.
@@ -129,12 +129,12 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# Clear our current, registered friends.
 		removables = await friends_client.get_all_friends()
 		for friend in removables:
-			time.sleep(delay)
+			await anyio.sleep(delay)
 			await friends_client.remove_friend_by_principal_id(friend.pid)
 
 		# Individually add all pending friend PIDs.
 		for friend_pid in all_friend_pids:
-			time.sleep(delay)
+			await anyio.sleep(delay)
 			await friends_client.add_friend_by_principal_id(0, friend_pid)
 	else:
 		# We expect the remote NEX implementation to remove all existing
@@ -142,7 +142,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# This path is currently only for Nintendo.
 		await friends_client.sync_friend(0, all_friend_pids, [])
 
-	time.sleep(delay)
+	await anyio.sleep(delay)
 
 	# Query all successful friends.
 	current_friends_list: [friends.FriendRelationship] = await friends_client.get_all_friends()
@@ -170,7 +170,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# All of our friends removed us, so there's no more work to be done.
 		return
 
-	time.sleep(delay)
+	await anyio.sleep(delay)
 
 	# Query the presences of all of our added friends.
 	# Only online users will have their presence returned.
@@ -229,7 +229,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		if not work:
 			continue
 
-		time.sleep(delay)
+		await anyio.sleep(delay)
 
 		try:
 			current_info = await friends_client.get_friend_persistent_info([current_friend.pid,])
