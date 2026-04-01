@@ -30,7 +30,8 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, backend_metrics
+from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db
+from api.networks import NetworkType
 
 class QueriedFriend:
 	""" A QueriedFriend holds the friend code, PID, and last access time for a given Friend. """
@@ -61,6 +62,16 @@ class QueriedFriend:
 async def main():
 	engine = create_engine(get_db_url())
 	session = Session(engine)
+	
+	# Create a simple DB wrapper for metrics module
+	class MetricsDB:
+		@staticmethod
+		def session():
+			return session
+	metrics_db = MetricsDB()
+	
+	# Initialize metrics with database
+	init_db(metrics_db)
 
 	while True:
 		time.sleep(1)
@@ -68,13 +79,12 @@ async def main():
 		
 		queried_friends = session.scalars(select(Friend).where(Friend.network == network)).all()
 		if not queried_friends:
-			record_loop_start(0)
-			record_loop_end(0)
-			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: No friends to process')
-			backend_metrics.loop_counter += 1
+			record_loop_start(0, network)
+			record_loop_end(0, network)
+			print(f'[{timestamp}] Loop {get_backend_metrics(network)["loop_counter"]}: No friends to process')
 			continue
 
-		record_loop_start(len(queried_friends))
+		record_loop_start(len(queried_friends), network)
 
 		all_friends: list[QueriedFriend] = list(map(QueriedFriend, queried_friends))
 		current_time = time.time()
@@ -90,19 +100,18 @@ async def main():
 				offline_queue.append(friend)
 		
 		# Determine which queue to process based on loop counter
-		if backend_metrics.loop_counter % OFFLINE_CHECK_INTERVAL == 0:
+		current_metrics = get_backend_metrics(network)
+		if current_metrics["loop_counter"] % OFFLINE_CHECK_INTERVAL == 0:
 			current_rotation = all_friends
-			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
+			print(f'[{timestamp}] Loop {current_metrics["loop_counter"]}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
 		else:
 			current_rotation = online_queue
-			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
-		
-		backend_metrics.loop_counter += 1
+			print(f'[{timestamp}] Loop {current_metrics["loop_counter"]}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
 		
 		users_processed_this_loop = len(current_rotation)
 
 		if not current_rotation:
-			record_loop_end(0)
+			record_loop_end(0, network)
 			continue
 
 		for i in range(0, len(current_rotation), 100):
@@ -159,15 +168,15 @@ async def main():
 			print('Done scraping.')
 			break
 
-		record_loop_end(users_processed_this_loop)
+		record_loop_end(users_processed_this_loop, network)
 		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
-		duration = get_backend_metrics()["last_loop_duration_seconds"] or 0
+		duration = get_backend_metrics(network)["last_loop_duration_seconds"] or 0
 		print(f'[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s')
 
 
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
 	# If we recently started, update our comment, and remove existing friends.
-	if get_backend_metrics()["uptime_seconds"] < 30:
+	if get_backend_metrics(network)["uptime_seconds"] < 30:
 		await anyio.sleep(delay)
 		await friends_client.update_comment('3dsrpc.com')
 
