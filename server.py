@@ -12,7 +12,7 @@ from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST
 from api.public import PRETENDO_BOT_FC, NINTENDO_BOT_FC
 from api.networks import NetworkType, name_to_network_type
-from api.metrics import metrics_bp
+from api.metrics import init_db
 from database import *
 
 app = Flask(__name__)
@@ -22,10 +22,14 @@ app.config["SQLALCHEMY_DATABASE_URI"] = get_db_url()
 db = SQLAlchemy()
 db.init_app(app)
 
+init_db(db)
+
 # We need to manually specify our base model's metadata after
 # importing all other models using it as the declarative base.
 # (See above with `from database import *`)
 migrate = Migrate(app, db, target_metadata=Base.metadata)
+
+from api.metrics import metrics_bp
 
 # Register metrics blueprint
 app.register_blueprint(metrics_bp)
@@ -317,34 +321,58 @@ def get_connected_consoles(discord_id: int):
 
 
 def sidenav():
-    nintendo_start_time = db.session.get(Config, NetworkType.NINTENDO).backend_uptime
-    pretendo_start_time = db.session.get(Config, NetworkType.PRETENDO).backend_uptime
-
-    status = 'Offline'
-    if nintendo_start_time is not None and pretendo_start_time is not None:
-        status = 'Operational'
-    elif (nintendo_start_time is not None and pretendo_start_time is None) or (nintendo_start_time is None and pretendo_start_time is not None):
-        status = 'Semi-Operational'
-
-    # Get a human-readable uptime.
-    time_now = datetime.datetime.now()
-    if nintendo_start_time is not None:
-        nintendo_status = 'Nintendo Backend has been up for %s...' % str(time_now - nintendo_start_time)[:-7]
-    else:
-        nintendo_status = 'Nintendo Backend: Offline'
-
-    if pretendo_start_time is not None:
-        pretendo_status = 'Pretendo Backend has been up for %s...' % str(time_now - pretendo_start_time)[:-7]
-    else:
-        pretendo_status = 'Pretendo Backend: Offline'
-
-    # Trim off microseconds
-    frontend_status = str(datetime.datetime.now() - frontend_uptime)[:-7]
-
+    from api.metrics import get_backend_metrics
+    from datetime import datetime, timedelta
+    import time
+    
+    nintendo_metrics = get_backend_metrics(NetworkType.NINTENDO)
+    pretendo_metrics = get_backend_metrics(NetworkType.PRETENDO)
+    
+    HEARTBEAT_THRESHOLD = 5 * 60  # 5 minutes
+    
+    def is_online(metrics: dict | None) -> bool:
+        if not metrics:
+            return False
+        last_seen = metrics.get('last_seen', 0)
+        return time.time() - last_seen < HEARTBEAT_THRESHOLD
+    
+    nintendo_uptime = nintendo_metrics['uptime_seconds'] if nintendo_metrics else 0
+    pretendo_uptime = pretendo_metrics['uptime_seconds'] if pretendo_metrics else 0
+    
+    nintendo_online = is_online(nintendo_metrics)
+    pretendo_online = is_online(pretendo_metrics)
+    
+    status = 'Operational' if nintendo_online and pretendo_online else 'Semi-Operational' if nintendo_online or pretendo_online else 'Offline'
+    
+    def format_uptime(seconds: float) -> str:
+        if seconds <= 0:
+            return 'Offline'
+        td = timedelta(seconds=int(seconds))
+        days = td.days
+        hours, remainder = divmod(td.seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        parts = []
+        if days > 0:
+            parts.append(f'{days} {"Day" if days == 1 else "Days"}')
+        if hours > 0:
+            parts.append(f'{hours} {"Hour" if hours == 1 else "Hours"}')
+        if minutes > 0:
+            parts.append(f'{minutes} {"Minute" if minutes == 1 else "Minutes"}')
+        if secs > 0 or len(parts) == 0:
+            parts.append(f'{secs} {"Second" if secs == 1 else "Seconds"}')
+        return ', '.join(parts)
+    
+    def format_uptime_or_offline(metrics: dict | None) -> str:
+        if not metrics or not is_online(metrics):
+            return 'Offline'
+        return format_uptime(metrics['uptime_seconds'])
+    
+    frontend_uptime_seconds = (datetime.now() - frontend_uptime).total_seconds()
+    
     data = {
-        'uptime': frontend_status,
-        'nintendo-uptime-backend': nintendo_status,
-        'pretendo-uptime-backend': pretendo_status,
+        'uptime': format_uptime(frontend_uptime_seconds),
+        'nintendo-uptime-backend': f'Nintendo Backend: {format_uptime_or_offline(nintendo_metrics)}',
+        'pretendo-uptime-backend': f'Pretendo Backend: {format_uptime_or_offline(pretendo_metrics)}',
         'status': status,
     }
     return data
