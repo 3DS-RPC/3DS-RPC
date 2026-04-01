@@ -38,6 +38,7 @@ class BackendMetrics:
     current_loop_queue: int = 0
     last_loop_queue: int = 0
     _loop_count: int = 0
+    loop_counter: int = 0
 
     @property
     def uptime_seconds(self) -> float:
@@ -84,7 +85,8 @@ def get_backend_metrics() -> dict:
         'average_loop_time_seconds': backend_metrics.average_loop_time,
         'last_loop_duration_seconds': backend_metrics.last_loop_duration,
         'current_loop_queue': backend_metrics.current_loop_queue,
-        'last_loop_queue': backend_metrics.last_loop_queue
+        'last_loop_queue': backend_metrics.last_loop_queue,
+        'loop_counter': backend_metrics.loop_counter
     }
 
 
