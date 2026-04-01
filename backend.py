@@ -30,7 +30,7 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db
+from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics
 from api.networks import NetworkType
 
 class QueriedFriend:
@@ -72,6 +72,9 @@ async def main():
 	
 	# Initialize metrics with database
 	init_db(metrics_db)
+	
+	# Reset metrics on startup
+	reset_metrics(network)
 
 	while True:
 		time.sleep(1)

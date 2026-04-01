@@ -62,6 +62,29 @@ class BackendMetrics:
         return None
 
 
+def reset_metrics(network: NetworkType) -> None:
+    """Reset metrics for a network (call when backend restarts)."""
+    from database import BackendMetrics as DBBackendMetrics
+    if db is None:
+        return
+    with db.session() as session:
+        existing = session.query(DBBackendMetrics).filter_by(network=network).first()
+        if existing:
+            session.delete(existing)
+        session.add(DBBackendMetrics(
+            network=network,
+            loop_counter=0,
+            total_users_processed=0,
+            total_loop_time=0.0,
+            last_loop_start_time=0.0,
+            last_loop_end_time=0.0,
+            current_loop_queue=0,
+            last_loop_queue=0,
+            backend_start_time=time.time()
+        ))
+        session.commit()
+
+
 def _ensure_metrics_record(network: NetworkType) -> None:
     """Ensure a metrics record exists for the given network."""
     from database import BackendMetrics as DBBackendMetrics
@@ -144,8 +167,8 @@ def record_loop_end(users_processed: int, network: NetworkType | None = None) ->
             session.commit()
 
 
-def get_backend_metrics(network: NetworkType | None = None) -> dict:
-    """Return backend metrics as a dictionary."""
+def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
+    """Return backend metrics as a dictionary, or None if no valid record exists."""
     from database import BackendMetrics as DBBackendMetrics
     if network is None or db is None:
         metrics = get_backend_metrics_instance()
@@ -161,10 +184,12 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict:
         }
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
-        if record:
+        if record and record.backend_start_time > 0:
             duration = record.last_loop_end_time - record.last_loop_start_time if record.last_loop_end_time > 0 else None
+            uptime = time.time() - record.backend_start_time
             return {
-                'uptime_seconds': time.time() - record.backend_start_time,
+                'uptime_seconds': uptime,
+                'last_seen': record.last_loop_end_time if record.last_loop_end_time > 0 else record.backend_start_time,
                 'total_users_processed': record.total_users_processed,
                 'total_loop_time_seconds': record.total_loop_time,
                 'average_loop_time_seconds': record.total_loop_time / record.loop_counter if record.loop_counter > 0 else 0.0,
@@ -173,17 +198,7 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict:
                 'last_loop_queue': record.last_loop_queue,
                 'loop_counter': record.loop_counter
             }
-        metrics = get_backend_metrics_instance()
-        return {
-            'uptime_seconds': metrics.uptime_seconds,
-            'total_users_processed': metrics.total_users_processed,
-            'total_loop_time_seconds': metrics.total_loop_time,
-            'average_loop_time_seconds': metrics.average_loop_time,
-            'last_loop_duration_seconds': metrics.last_loop_duration,
-            'current_loop_queue': metrics.current_loop_queue,
-            'last_loop_queue': metrics.last_loop_queue,
-            'loop_counter': metrics.loop_counter
-        }
+        return None
 
 
 def get_network_stats() -> dict:
