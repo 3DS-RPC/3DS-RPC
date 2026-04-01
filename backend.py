@@ -1,13 +1,14 @@
 # Created by Deltaion Lee (MCMi460) on Github
 # Based from NintendoClients' `examples/3ds/friends.py`
 import datetime
+import traceback
 from typing import List
 
 from nintendo import nasc
 from nintendo.nex import backend, friends, settings
 from sqlalchemy import create_engine, delete, select, update
 from sqlalchemy.orm import Session
-import anyio, sys, argparse
+import anyio, sys, argparse, time
 
 from database import start_db_time, get_db_url, Friend, DiscordFriends
 
@@ -95,17 +96,18 @@ async def main():
 				s = settings.load('friends')
 				s.configure("ridfebb9", 20000)
 
-				async with backend.connect(s, response.host, response.port) as be:
-					async with be.login(str(PID), NEX_PASSWORD) as client:
-						friends_client = friends.FriendsClientV1(client)
+				async with anyio.move_on_after(30):
+					async with backend.connect(s, response.host, response.port) as be:
+						async with be.login(str(PID), NEX_PASSWORD) as client:
+							friends_client = friends.FriendsClientV1(client)
 
-						# Begin our main loop!
-						await main_friends_loop(friends_client, session, current_rotation)
+							# Begin our main loop!
+							await main_friends_loop(friends_client, session, current_rotation)
 
 			except Exception as e:
 				print('An error occurred!\n%s' % e)
 				print(traceback.format_exc())
-				time.sleep(2)
+				await anyio.sleep(2)
 
 		if scrape_only:
 			print('Done scraping.')
@@ -129,19 +131,40 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	if network == NetworkType.PRETENDO:
 		# Clear our current, registered friends.
 		removables = await friends_client.get_all_friends()
+		removed_count: int = 0
 		for friend in removables:
 			await anyio.sleep(delay)
-			await friends_client.remove_friend_by_principal_id(friend.pid)
+			try:
+				await friends_client.remove_friend_by_principal_id(friend.pid)
+				removed_count += 1
+			except Exception as e:
+				print(f'Failed to remove friend {friend.pid}: {e}')
+
+		print(f'Removed {removed_count}/{len(removables)} friends')
 
 		# Individually add all pending friend PIDs.
+		added_count: int = 0
+		add_errors: List[tuple] = []
 		for friend_pid in all_friend_pids:
 			await anyio.sleep(delay)
-			await friends_client.add_friend_by_principal_id(0, friend_pid)
+			try:
+				await friends_client.add_friend_by_principal_id(0, friend_pid)
+				added_count += 1
+			except Exception as e:
+				add_errors.append((friend_pid, e))
+				print(f'Failed to add friend {friend_pid}: {e}')
+
+		if add_errors:
+			print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
 	else:
 		# We expect the remote NEX implementation to remove all existing
 		# relationships, and replace them with the 100 PIDs specified.
 		# This path is currently only for Nintendo.
-		await friends_client.sync_friend(0, all_friend_pids, [])
+		try:
+			await friends_client.sync_friend(0, all_friend_pids, [])
+		except Exception as e:
+			print(f'Failed to sync friends: {e}')
+			raise
 
 	await anyio.sleep(delay)
 
@@ -160,13 +183,18 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			continue
 
 		# This user must have removed us.
-		# Remove this friend code from both our tracked network friends and Discord friend codes.
-		session.execute(delete(Friend).where(Friend.friend_code == current_friend.friend_code).where(Friend.network == network))
-		session.execute(delete(DiscordFriends).where(
-			DiscordFriends.friend_code == current_friend.friend_code,
-			DiscordFriends.network == network)
-		)
+		unfriended_codes.append(current_friend.friend_code)
+
+	# Batch delete unfriended users
+	if unfriended_codes:
+		for fc in unfriended_codes:
+			session.execute(delete(Friend).where(Friend.friend_code == fc).where(Friend.network == network))
+			session.execute(delete(DiscordFriends).where(
+				DiscordFriends.friend_code == fc,
+				DiscordFriends.network == network)
+			)
 		session.commit()
+		print(f'Removed {len(unfriended_codes)} unfriended users')
 
 	if len(added_friends) == 0:
 		# All of our friends removed us, so there's no more work to be done.
@@ -204,7 +232,6 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				last_online=time.time()
 			)
 		)
-		session.commit()
 
 	# Otherwise, if we have no presence data, this user must be offline.
 	for offline_user in [h for h in current_friend_pids if not h in online_user_pids]:
@@ -219,9 +246,10 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				upd_id=0
 			)
 		)
-		session.commit()
+	session.commit()
 
 	# Lastly, update all added friend comments, usernames, etc.
+	pending_updates: List[dict] = []
 	for current_friend in added_friends:
 		# As this is a time-heavy task, only update if necessary.
 		work: bool = False
@@ -235,7 +263,8 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 
 		try:
 			current_info = await friends_client.get_friend_persistent_info([current_friend.pid,])
-		except:
+		except Exception as e:
+			print(f'Failed to get persistent info for {current_friend.friend_code}: {e}')
 			continue
 		comment: str = current_info[0].message
 		favorite_game: int = 0
@@ -266,18 +295,28 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		else:
 			comment = ''
 
+		pending_updates.append({
+			'friend_code': current_friend.friend_code,
+			'username': username,
+			'message': comment,
+			'mii': face,
+			'favorite_game': favorite_game
+		})
+
+	# Batch commit all updates
+	for upd in pending_updates:
 		session.execute(
 			update(Friend)
-			.where(Friend.friend_code == current_friend.friend_code)
+			.where(Friend.friend_code == upd['friend_code'])
 			.where(Friend.network == network)
 			.values(
-				username=username,
-				message=comment,
-				mii=face,
-				favorite_game=favorite_game
+				username=upd['username'],
+				message=upd['message'],
+				mii=upd['mii'],
+				favorite_game=upd['favorite_game']
 			)
 		)
-		session.commit()
+	session.commit()
 
 
 if __name__ == '__main__':
