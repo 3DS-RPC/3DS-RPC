@@ -56,6 +56,20 @@ class Friend(Base):
     favorite_game: Mapped[int] = mapped_column("favorite_game", BigInteger(), nullable=False)
 
 
+class BackendMetrics(Base):
+    __tablename__ = "backend_metrics"
+
+    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), primary_key=True)
+    loop_counter: Mapped[int] = mapped_column("loop_counter", Integer(), nullable=False, default=0)
+    total_users_processed: Mapped[int] = mapped_column("total_users_processed", Integer(), nullable=False, default=0)
+    total_loop_time: Mapped[float] = mapped_column("total_loop_time", nullable=False, default=0.0)
+    last_loop_start_time: Mapped[float] = mapped_column("last_loop_start_time", nullable=False, default=0.0)
+    last_loop_end_time: Mapped[float] = mapped_column("last_loop_end_time", nullable=False, default=0.0)
+    current_loop_queue: Mapped[int] = mapped_column("current_loop_queue", Integer(), nullable=False, default=0)
+    last_loop_queue: Mapped[int] = mapped_column("last_loop_queue", Integer(), nullable=False, default=0)
+    backend_start_time: Mapped[float] = mapped_column("backend_start_time", nullable=False, default=0.0)
+
+
 class DiscordFriends(Base):
     __tablename__ = "discord_friends"
 
