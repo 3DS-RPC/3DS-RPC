@@ -12,6 +12,7 @@ from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST
 from api.public import PRETENDO_BOT_FC, NINTENDO_BOT_FC
 from api.networks import NetworkType, name_to_network_type
+from api.metrics import metrics_bp
 from database import *
 
 app = Flask(__name__)
@@ -25,6 +26,9 @@ db.init_app(app)
 # importing all other models using it as the declarative base.
 # (See above with `from database import *`)
 migrate = Migrate(app, db, target_metadata=Base.metadata)
+
+# Register metrics blueprint
+app.register_blueprint(metrics_bp)
 
 limiter = Limiter(
     get_remote_address,
