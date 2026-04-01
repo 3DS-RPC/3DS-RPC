@@ -3,6 +3,7 @@
 import datetime
 import traceback
 from typing import List
+from datetime import datetime as dt
 
 from nintendo import nasc
 from nintendo.nex import backend, friends, settings
@@ -11,6 +12,11 @@ from sqlalchemy.orm import Session
 import anyio, sys, argparse, time
 
 from database import start_db_time, get_db_url, Friend, DiscordFriends
+
+# Time in seconds before a user is considered "offline"
+OFFLINE_THRESHOLD = 30 * 60  # 30 minutes
+# How many loops between checking offline users
+OFFLINE_CHECK_INTERVAL = 10  # Check offline users every 10 loops
 
 from api.private import NINTENDO_NEX_PASSWORD, NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME, NINTENDO_REGION, NINTENDO_LANGUAGE, PRETENDO_NEX_PASSWORD, NINTENDO_PID, NINTENDO_PID_HMAC, PRETENDO_SERIAL_NUMBER, PRETENDO_MAC_ADDRESS, PRETENDO_DEVICE_CERT, PRETENDO_DEVICE_NAME, PRETENDO_REGION, PRETENDO_LANGUAGE, PRETENDO_PID, PRETENDO_PID_HMAC
 from api import *
@@ -25,7 +31,7 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics
+from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, backend_metrics
 
 class QueriedFriend:
 	""" A QueriedFriend holds the friend code, PID, and last access time for a given Friend. """
@@ -51,21 +57,49 @@ async def main():
 
 	while True:
 		time.sleep(1)
-		print('Grabbing new friends...')
-
+		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
+		
 		queried_friends = session.scalars(select(Friend).where(Friend.network == network)).all()
 		if not queried_friends:
 			record_loop_start(0)
 			record_loop_end(0)
+			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: No friends to process')
+			backend_metrics.loop_counter += 1
 			continue
 
 		record_loop_start(len(queried_friends))
 
 		all_friends: list[QueriedFriend] = list(map(QueriedFriend, queried_friends))
-		users_processed_this_loop = len(all_friends)
+		current_time = time.time()
+		
+		# Split friends into online and offline queues
+		online_queue = []
+		offline_queue = []
+		
+		for friend in all_friends:
+			if current_time - friend.last_accessed > OFFLINE_THRESHOLD:
+				offline_queue.append(friend)
+			else:
+				online_queue.append(friend)
+		
+		# Determine which queue to process based on loop counter
+		if backend_metrics.loop_counter % OFFLINE_CHECK_INTERVAL == 0:
+			current_rotation = all_friends
+			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
+			backend_metrics.loop_counter = 0
+		else:
+			current_rotation = online_queue
+			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
+			backend_metrics.loop_counter += 1
+		
+		users_processed_this_loop = len(current_rotation)
 
-		for i in range(0, len(all_friends), 100):
-			current_rotation = all_friends[i:i+100]
+		if not current_rotation:
+			record_loop_end(0)
+			continue
+
+		for i in range(0, len(current_rotation), 100):
+			batch = current_rotation[i:i+100]
 
 			try:
 				client = nasc.NASCClient()
@@ -79,7 +113,6 @@ async def main():
 						client.set_url("nasc.nintendowifi.net")
 						PID = NINTENDO_PID
 						NEX_PASSWORD = NINTENDO_NEX_PASSWORD
-							
 						
 						client.set_device(NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME)
 						client.set_user(PID, NINTENDO_PID_HMAC)
@@ -102,13 +135,13 @@ async def main():
 				s = settings.load('friends')
 				s.configure("ridfebb9", 20000)
 
-				async with anyio.move_on_after(30):
+				with anyio.move_on_after(30):
 					async with backend.connect(s, response.host, response.port) as be:
 						async with be.login(str(PID), NEX_PASSWORD) as client:
 							friends_client = friends.FriendsClientV1(client)
 
 							# Begin our main loop!
-							await main_friends_loop(friends_client, session, current_rotation)
+							await main_friends_loop(friends_client, session, batch)
 
 			except Exception as e:
 				print('An error occurred!\n%s' % e)
@@ -120,7 +153,9 @@ async def main():
 			break
 
 		record_loop_end(users_processed_this_loop)
-		print(f'Processed {users_processed_this_loop} users in {get_backend_metrics()["last_loop_duration_seconds"]:.2f}s')
+		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
+		duration = get_backend_metrics()["last_loop_duration_seconds"] or 0
+		print(f'[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s')
 
 
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
