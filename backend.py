@@ -15,7 +15,6 @@ from database import start_db_time, get_db_url, Friend, DiscordFriends
 
 # Time in seconds before a user is considered "offline"
 OFFLINE_THRESHOLD = 30 * 60  # 30 minutes
-# How many loops between checking offline users
 OFFLINE_CHECK_INTERVAL = 10  # Check offline users every 10 loops
 
 from api.private import NINTENDO_NEX_PASSWORD, NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME, NINTENDO_REGION, NINTENDO_LANGUAGE, PRETENDO_NEX_PASSWORD, NINTENDO_PID, NINTENDO_PID_HMAC, PRETENDO_SERIAL_NUMBER, PRETENDO_MAC_ADDRESS, PRETENDO_DEVICE_CERT, PRETENDO_DEVICE_NAME, PRETENDO_REGION, PRETENDO_LANGUAGE, PRETENDO_PID, PRETENDO_PID_HMAC
@@ -44,11 +43,19 @@ class QueriedFriend:
 
 	# The last access date of this user, per database.
 	last_accessed: int
+	
+	# Whether the user is currently online
+	online: bool
+	
+	# When the user was last seen online
+	last_online: int
 
 	def __init__(self, given_friend: Friend):
 		self.friend_code = given_friend.friend_code
 		self.pid = friend_code_to_principal_id(given_friend.friend_code)
 		self.last_accessed = given_friend.last_accessed
+		self.online = given_friend.online
+		self.last_online = given_friend.last_online
 
 
 async def main():
@@ -77,20 +84,20 @@ async def main():
 		offline_queue = []
 		
 		for friend in all_friends:
-			if current_time - friend.last_accessed > OFFLINE_THRESHOLD:
-				offline_queue.append(friend)
-			else:
+			if friend.online and (current_time - friend.last_online <= OFFLINE_THRESHOLD):
 				online_queue.append(friend)
+			else:
+				offline_queue.append(friend)
 		
 		# Determine which queue to process based on loop counter
 		if backend_metrics.loop_counter % OFFLINE_CHECK_INTERVAL == 0:
 			current_rotation = all_friends
 			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
-			backend_metrics.loop_counter = 0
 		else:
 			current_rotation = online_queue
 			print(f'[{timestamp}] Loop {backend_metrics.loop_counter}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
-			backend_metrics.loop_counter += 1
+		
+		backend_metrics.loop_counter += 1
 		
 		users_processed_this_loop = len(current_rotation)
 
