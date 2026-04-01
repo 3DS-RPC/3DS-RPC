@@ -5,7 +5,8 @@
 First, copy the template:
 
 ```
-cp template.private.py api/private.py
+cp api/template.private.py api/private.py
+cp api/template.metrics_keys.json api/template.metrics_keys.json
 ```
 
 Open `api/private.py` and fill in all required secrets and configuration values as described in the file’s comments (e.g., DB_URL, CLIENT_ID, CLIENT_SECRET, HOST, etc).
