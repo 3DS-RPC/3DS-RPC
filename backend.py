@@ -1,6 +1,7 @@
 # Created by Deltaion Lee (MCMi460) on Github
 # Based from NintendoClients' `examples/3ds/friends.py`
 import datetime
+from typing import List
 
 from nintendo import nasc
 from nintendo.nex import backend, friends, settings
@@ -18,9 +19,9 @@ from api.networks import NetworkType, InvalidNetworkError
 import logging
 logging.basicConfig(level=logging.INFO)
 
-delay = 2
-backend_start_time = time.time()
-scrape_only = False
+delay: int = 2
+backend_start_time: float = time.time()
+scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
@@ -54,7 +55,7 @@ async def main():
 		if not queried_friends:
 			continue
 
-		all_friends: [QueriedFriend] = list(map(QueriedFriend, queried_friends))
+		all_friends: list[QueriedFriend] = list(map(QueriedFriend, queried_friends))
 
 		for i in range(0, len(all_friends), 100):
 			current_rotation = all_friends[i:i+100]
@@ -124,7 +125,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	# Although both Nintendo and Pretendo currently support
 	# the bulk `sync_friends` RPC call, Pretendo's
 	# implementation is not optimized, and overloads their servers.
-	all_friend_pids: list[int] = [ f.pid for f in current_rotation ]
+	all_friend_pids: List[int] = [f.pid for f in current_rotation]
 	if network == NetworkType.PRETENDO:
 		# Clear our current, registered friends.
 		removables = await friends_client.get_all_friends()
@@ -145,13 +146,14 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	await anyio.sleep(delay)
 
 	# Query all successful friends.
-	current_friends_list: [friends.FriendRelationship] = await friends_client.get_all_friends()
-	current_friend_pids: [int] = [ f.pid for f in current_friends_list ]
+	current_friends_list = await friends_client.get_all_friends()
+	current_friend_pids: List[int] = [f.pid for f in current_friends_list]
 
 	# Determine which remote friends failed to add, and thus have unfriended us.
-	added_friends: [QueriedFriend] = []
+	added_friends: List[QueriedFriend] = []
+	unfriended_codes: List[str] = []
 	for current_friend in current_rotation:
-		current_pid = current_friend.pid
+		current_pid: int = current_friend.pid
 
 		if current_pid in current_friend_pids:
 			added_friends.append(current_friend)
@@ -174,8 +176,8 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 
 	# Query the presences of all of our added friends.
 	# Only online users will have their presence returned.
-	tracked_presences: [friends.FriendPresence] = await friends_client.get_friend_presence(current_friend_pids)
-	online_user_pids: [int] = []
+	tracked_presences = await friends_client.get_friend_presence(current_friend_pids)
+	online_user_pids: List[int] = []
 
 	for game in tracked_presences:
 		# Set all to offline if scraping
@@ -183,12 +185,12 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			break
 
 		online_user_pids.append(game.pid)
-		game_description = game.presence.game_mode_description
+		game_description: str = game.presence.game_mode_description
 		if not game_description:
 			game_description = ''
-		joinable = bool(game.presence.join_availability_flag)
+		joinable: bool = bool(game.presence.join_availability_flag)
 
-		friend_code = str(principal_id_to_friend_code(game.pid)).zfill(12)
+		friend_code: str = str(principal_id_to_friend_code(game.pid)).zfill(12)
 		session.execute(
 			update(Friend)
 			.where(Friend.friend_code == friend_code)
@@ -205,8 +207,8 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		session.commit()
 
 	# Otherwise, if we have no presence data, this user must be offline.
-	for offline_user in [ h for h in current_friend_pids if not h in online_user_pids ]:
-		friend_code = str(principal_id_to_friend_code(offline_user)).zfill(12)
+	for offline_user in [h for h in current_friend_pids if not h in online_user_pids]:
+		friend_code: str = str(principal_id_to_friend_code(offline_user)).zfill(12)
 		session.execute(
 			update(Friend)
 			.where(Friend.friend_code == friend_code)
@@ -222,7 +224,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	# Lastly, update all added friend comments, usernames, etc.
 	for current_friend in added_friends:
 		# As this is a time-heavy task, only update if necessary.
-		work = False
+		work: bool = False
 		if time.time() - current_friend.last_accessed <= 600000 or scrape_only:
 			work = True
 
@@ -235,10 +237,10 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			current_info = await friends_client.get_friend_persistent_info([current_friend.pid,])
 		except:
 			continue
-		comment = current_info[0].message
-		favorite_game = 0
-		username = ''
-		face = ''
+		comment: str = current_info[0].message
+		favorite_game: int = 0
+		username: str = ''
+		face: str = ''
 		if not comment.endswith(' '):
 			# TODO(MCMi460): I just do not understand what I'm doing wrong with get_friend_mii_list.
 			# The docs do not specify much about usage or parameters.
@@ -252,7 +254,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			queried_relationship = [r for r in current_friends_list if r.pid == current_friend.pid][0]
 			queried_relationship.friend_code = 0
 
-			user_mii: [friends.FriendMii] = await friends_client.get_friend_mii([queried_relationship,])
+			user_mii: list[friends.FriendMii] = await friends_client.get_friend_mii([queried_relationship,])
 			username = user_mii[0].mii.name
 			mii_data = user_mii[0].mii.mii_data
 			obj = MiiData()
