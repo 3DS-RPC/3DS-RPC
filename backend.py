@@ -21,10 +21,11 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 delay: int = 2
-backend_start_time: float = time.time()
 scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
+
+from api.metrics import record_loop_start, record_loop_end, get_backend_metrics
 
 class QueriedFriend:
 	""" A QueriedFriend holds the friend code, PID, and last access time for a given Friend. """
@@ -54,9 +55,14 @@ async def main():
 
 		queried_friends = session.scalars(select(Friend).where(Friend.network == network)).all()
 		if not queried_friends:
+			record_loop_start(0)
+			record_loop_end(0)
 			continue
 
+		record_loop_start(len(queried_friends))
+
 		all_friends: list[QueriedFriend] = list(map(QueriedFriend, queried_friends))
+		users_processed_this_loop = len(all_friends)
 
 		for i in range(0, len(all_friends), 100):
 			current_rotation = all_friends[i:i+100]
@@ -113,10 +119,13 @@ async def main():
 			print('Done scraping.')
 			break
 
+		record_loop_end(users_processed_this_loop)
+		print(f'Processed {users_processed_this_loop} users in {get_backend_metrics()["last_loop_duration_seconds"]:.2f}s')
+
 
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
 	# If we recently started, update our comment, and remove existing friends.
-	if time.time() - backend_start_time < 30:
+	if get_backend_metrics()["uptime_seconds"] < 30:
 		await anyio.sleep(delay)
 		await friends_client.update_comment('3dsrpc.com')
 
