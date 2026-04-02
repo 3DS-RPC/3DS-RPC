@@ -137,9 +137,9 @@ async def main():
 						client.set_user(PID, NINTENDO_PID_HMAC)
 					case NetworkType.PRETENDO:
 						client.set_locale(PRETENDO_REGION, PRETENDO_LANGUAGE)
-
 						client.set_url("nasc.pretendo.cc")
 						client.context.set_authority(None)
+						
 						PID = PRETENDO_PID
 						NEX_PASSWORD = PRETENDO_NEX_PASSWORD
 						
@@ -154,13 +154,12 @@ async def main():
 				s = settings.load('friends')
 				s.configure("ridfebb9", 20000)
 
-				with anyio.move_on_after(30):
-					async with backend.connect(s, response.host, response.port) as be:
-						async with be.login(str(PID), NEX_PASSWORD) as client:
-							friends_client = friends.FriendsClientV1(client)
+				async with backend.connect(s, response.host, response.port) as be:
+					async with be.login(str(PID), NEX_PASSWORD) as client:
+						friends_client = friends.FriendsClientV1(client)
 
-							# Begin our main loop!
-							await main_friends_loop(friends_client, session, batch)
+						# Begin our main loop!
+						await main_friends_loop(friends_client, session, batch)
 
 			except Exception as e:
 				print('An error occurred!\n%s' % e)
@@ -178,55 +177,64 @@ async def main():
 
 
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
-	# If we recently started, update our comment, and remove existing friends.
-	if get_backend_metrics(network)["uptime_seconds"] < 30:
-		await anyio.sleep(delay)
-		await friends_client.update_comment('3dsrpc.com')
-
-	# Synchronize our current roster of friends.
-	# By bulk syncing friends, we can remove all existing friends,
-	# and then add our new friends with only one call.
-	#
-	# Although both Nintendo and Pretendo currently support
-	# the bulk `sync_friends` RPC call, Pretendo's
-	# implementation is not optimized, and overloads their servers.
-	all_friend_pids: List[int] = [f.pid for f in current_rotation]
-	if network == NetworkType.PRETENDO:
-		# Clear our current, registered friends.
-		removables = await friends_client.get_all_friends()
-		removed_count: int = 0
-		for friend in removables:
+	# TODO:(Phoenix): Assumes 3s per user (300s for 100 users). May need to increase to 6s/user (10 min per batch)
+	# If timeout is exceeded, the batch ends early (may stop mid-batch) to prevent hangs
+	timeout = 3 * len(current_rotation)
+	with anyio.move_on_after(timeout) as timeout_scope:
+		# If we recently started, update our comment, and remove existing friends.
+		if get_backend_metrics(network)["uptime_seconds"] < 30:
 			await anyio.sleep(delay)
-			try:
-				await friends_client.remove_friend_by_principal_id(friend.pid)
-				removed_count += 1
-			except Exception as e:
-				print(f'Failed to remove friend {friend.pid}: {e}')
-
-		print(f'Removed {removed_count}/{len(removables)} friends')
-
-		# Individually add all pending friend PIDs.
-		added_count: int = 0
-		add_errors: List[tuple] = []
-		for friend_pid in all_friend_pids:
+			await friends_client.update_comment('3dsrpc.com')
+			
+		print(f'Processing {len(current_rotation)} users with {timeout / 60:.1f} minutes timeout')
+		if get_backend_metrics(network)["uptime_seconds"] < 30:
 			await anyio.sleep(delay)
-			try:
-				await friends_client.add_friend_by_principal_id(0, friend_pid)
-				added_count += 1
-			except Exception as e:
-				add_errors.append((friend_pid, e))
-				print(f'Failed to add friend {friend_pid}: {e}')
+			await friends_client.update_comment('3dsrpc.com')
 
-		if add_errors:
-			print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
-	else:
-		# We expect the remote NEX implementation to remove all existing
-		# relationships, and replace them with the 100 PIDs specified.
-		# This path is currently only for Nintendo.
-		try:
-			await friends_client.sync_friend(0, all_friend_pids, [])
-		except Exception as e:
-			print(f'Failed to sync friends: {e}')
+		# Synchronize our current roster of friends.
+		# By bulk syncing friends, we can remove all existing friends,
+		# and then add our new friends with only one call.
+		#
+		# Although both Nintendo and Pretendo currently support
+		# the bulk `sync_friends` RPC call, Pretendo's
+		# implementation is not optimized, and overloads their servers.
+		all_friend_pids: List[int] = [f.pid for f in current_rotation]
+		if network == NetworkType.PRETENDO:
+			# Clear our current, registered friends.
+			removables = await friends_client.get_all_friends()
+			removed_count: int = 0
+			for friend in removables:
+				await anyio.sleep(delay)
+				try:
+					await friends_client.remove_friend_by_principal_id(friend.pid)
+					removed_count += 1
+				except Exception as e:
+					print(f'Failed to remove friend {friend.pid}: {e}')
+
+			print(f'Removed {removed_count}/{len(removables)} friends')
+
+			# Individually add all pending friend PIDs.
+			added_count: int = 0
+			add_errors: List[tuple] = []
+			for friend_pid in all_friend_pids:
+				await anyio.sleep(delay)
+				try:
+					await friends_client.add_friend_by_principal_id(0, friend_pid)
+					added_count += 1
+				except Exception as e:
+					add_errors.append((friend_pid, e))
+					print(f'Failed to add friend {friend_pid}: {e}')
+
+			if add_errors:
+				print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
+		else:
+			# We expect the remote NEX implementation to remove all existing
+			# relationships, and replace them with the 100 PIDs specified.
+			# This path is currently only for Nintendo.
+			try:
+				await friends_client.sync_friend(0, all_friend_pids, [])
+			except Exception as e:
+				print(f'Failed to sync friends: {e}')
 			raise
 
 	await anyio.sleep(delay)
