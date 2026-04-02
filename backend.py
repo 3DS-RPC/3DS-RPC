@@ -25,6 +25,11 @@ from api.networks import NetworkType, InvalidNetworkError
 import logging
 logging.basicConfig(level=logging.INFO)
 
+DEBUG = True
+if not DEBUG:
+    logging.getLogger('nintendo').setLevel(logging.WARNING)
+    logging.getLogger('anynet').setLevel(logging.WARNING)
+
 delay: int = 2
 scrape_only: bool = False
 
