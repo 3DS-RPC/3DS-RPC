@@ -195,7 +195,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		if get_backend_metrics(network)["uptime_seconds"] < 30:
 			await anyio.sleep(delay)
 			await friends_client.update_comment('3dsrpc.com')
-
+		
 		# Synchronize our current roster of friends.
 		# By bulk syncing friends, we can remove all existing friends,
 		# and then add our new friends with only one call.
@@ -242,6 +242,9 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				print(f'Failed to sync friends: {e}')
 			raise
 
+	if timeout_scope.cancelled_caught:
+		print(f'Batch timed out after {timeout} seconds')
+	
 	await anyio.sleep(delay)
 
 	# Query all successful friends.
