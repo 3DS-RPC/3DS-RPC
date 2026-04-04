@@ -332,7 +332,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	for current_friend in added_friends:
 		# As this is a time-heavy task, only update if necessary.
 		work: bool = False
-		if time.time() - current_friend.last_accessed <= 600 or scrape_only:
+		if time.time() - current_friend.last_accessed >= 600 or scrape_only:
 			work = True
 
 		if not work:
