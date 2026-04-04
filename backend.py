@@ -190,7 +190,9 @@ async def main():
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
 	# TODO:(Phoenix): Assumes 3s per user (300s for 100 users). May need to increase to 6s/user (10 min per batch)
 	# If timeout is exceeded, the batch ends early (may stop mid-batch) to prevent hangs
-	timeout = 3 * len(current_rotation)
+	# Minimum timeout: 60s (prevents batches from running too fast for small queues)
+	# Maximum timeout: 300s / 5 minutes (prevents excessive waiting for very large queues)
+	timeout = min(300, max(60, 3 * len(current_rotation)))
 	with anyio.move_on_after(timeout) as timeout_scope:
 		# If we recently started, update our comment, and remove existing friends.
 		if get_backend_metrics(network)["uptime_seconds"] < 30:
