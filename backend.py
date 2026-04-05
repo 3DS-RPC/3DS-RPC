@@ -17,6 +17,17 @@ from database import start_db_time, get_db_url, Friend, DiscordFriends
 OFFLINE_THRESHOLD = 30 * 60  # 30 minutes
 OFFLINE_CHECK_INTERVAL = 10  # Check offline users every 10 loops
 
+# Delay table with descriptive names for each delay purpose
+DELAY_TABLE = {
+    "INITIAL": 2,         # Initial delay after startup (comment update)
+    "REMOVE_FRIEND": 2,   # Delay between removing friends in batch
+    "ADD_FRIEND": 2,      # Delay between adding friends
+    "SYNC_FRIENDS": 2,    # Delay after sync operation
+    "GET_PRESENCE": 2,    # Delay before querying presence
+    "UPDATE_INFO": 2,     # Delay before getting persistent info
+    "MINIMUM_LOOP": 2,    # Minimum delay at end of each loop cycle
+}
+
 from api.private import NINTENDO_NEX_PASSWORD, NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME, NINTENDO_REGION, NINTENDO_LANGUAGE, PRETENDO_NEX_PASSWORD, NINTENDO_PID, NINTENDO_PID_HMAC, PRETENDO_SERIAL_NUMBER, PRETENDO_MAC_ADDRESS, PRETENDO_DEVICE_CERT, PRETENDO_DEVICE_NAME, PRETENDO_REGION, PRETENDO_LANGUAGE, PRETENDO_PID, PRETENDO_PID_HMAC
 from api import *
 from api.love2 import *
@@ -30,7 +41,6 @@ if not DEBUG:
     logging.getLogger('nintendo').setLevel(logging.WARNING)
     logging.getLogger('anynet').setLevel(logging.WARNING)
 
-delay: int = 2
 scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
@@ -196,12 +206,12 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	with anyio.move_on_after(timeout) as timeout_scope:
 		# If we recently started, update our comment, and remove existing friends.
 		if get_backend_metrics(network)["uptime_seconds"] < 30:
-			await anyio.sleep(delay)
+			await anyio.sleep(DELAY_TABLE["INITIAL"])
 			await friends_client.update_comment('3dsrpc.com')
 			
 		print(f'Processing {len(current_rotation)} users with {timeout / 60:.1f} minutes timeout')
 		if get_backend_metrics(network)["uptime_seconds"] < 30:
-			await anyio.sleep(delay)
+			await anyio.sleep(DELAY_TABLE["INITIAL"])
 			await friends_client.update_comment('3dsrpc.com')
 		
 		# Synchronize our current roster of friends.
@@ -217,7 +227,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			removables = await friends_client.get_all_friends()
 			removed_count: int = 0
 			for friend in removables:
-				await anyio.sleep(delay)
+				await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
 				try:
 					await friends_client.remove_friend_by_principal_id(friend.pid)
 					removed_count += 1
@@ -230,7 +240,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			added_count: int = 0
 			add_errors: List[tuple] = []
 			for friend_pid in all_friend_pids:
-				await anyio.sleep(delay)
+				await anyio.sleep(DELAY_TABLE["ADD_FRIEND"])
 				try:
 					await friends_client.add_friend_by_principal_id(0, friend_pid)
 					added_count += 1
@@ -248,12 +258,12 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				await friends_client.sync_friend(0, all_friend_pids, [])
 			except Exception as e:
 				print(f'Failed to sync friends: {e}')
-			raise
+			await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
 	if timeout_scope.cancelled_caught:
 		print(f'Batch timed out after {timeout} seconds')
 	
-	await anyio.sleep(delay)
+	await anyio.sleep(DELAY_TABLE["MINIMUM_LOOP"])
 
 	# Query all successful friends.
 	current_friends_list = await friends_client.get_all_friends()
@@ -287,7 +297,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# All of our friends removed us, so there's no more work to be done.
 		return
 
-	await anyio.sleep(delay)
+	await anyio.sleep(DELAY_TABLE["GET_PRESENCE"])
 
 	# Query the presences of all of our added friends.
 	# Only online users will have their presence returned.
@@ -346,7 +356,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		if not work:
 			continue
 
-		await anyio.sleep(delay)
+		await anyio.sleep(DELAY_TABLE["UPDATE_INFO"])
 
 		try:
 			current_info = await friends_client.get_friend_persistent_info([current_friend.pid,])
