@@ -138,7 +138,7 @@ class APIClient:
 		if not self.current_user.rpc_session_token:
 			print('[NO SESSION TO RESET]')
 			return False
-		elif time.time() - self.current_user.last_accessed <= 30:
+		if time.time() - self.current_user.last_accessed <= 30:
 			print('[MANUAL RATE LIMITED]')
 			return False
 
@@ -146,6 +146,26 @@ class APIClient:
 			'Authorization': 'Bearer %s' % self.current_user.bearer_token,
 			'Content-Type': 'application/json',
 		}
+
+		# Discord doesn't always properly terminate activity sessions anymore,
+		# so we explicitly clear them first to avoid ghost/stuck presence before disconnecting
+		data = {
+			'activities': [],
+			'token': self.current_user.rpc_session_token,
+		}
+		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers)
+
+		try:
+			r.raise_for_status()
+		except HTTPError as e:
+			# If we encounter 400, we assume that this session has already expired.
+			# Let's go ahead and reset the session anyway.
+			if e.response.status_code == 400:
+				DiscordSession().retire(self.current_user.refresh_token)
+			else:
+				raise e
+
+		# Then delete the session
 		data = {
 			'token': self.current_user.rpc_session_token,
 		}
