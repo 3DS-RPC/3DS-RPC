@@ -85,6 +85,19 @@ def reset_metrics(network: NetworkType) -> None:
         session.commit()
 
 
+def update_backend_heartbeat(network: NetworkType) -> None:
+    """Update the last_loop_end_time heartbeat so the frontend doesn't mark us offline."""
+    from database import BackendMetrics as DBBackendMetrics
+    if db is None:
+        return
+    _ensure_metrics_record(network)
+    with db.session() as session:
+        record = session.query(DBBackendMetrics).filter_by(network=network).first()
+        if record:
+            record.last_loop_end_time = time.time()
+            session.commit()
+
+
 def _ensure_metrics_record(network: NetworkType) -> None:
     """Ensure a metrics record exists for the given network."""
     from database import BackendMetrics as DBBackendMetrics

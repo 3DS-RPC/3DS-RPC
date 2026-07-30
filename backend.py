@@ -45,7 +45,7 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics
+from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics, update_backend_heartbeat
 from api.networks import NetworkType
 
 class QueriedFriend:
@@ -175,10 +175,12 @@ async def main():
 
 						# Begin our main loop!
 						await main_friends_loop(friends_client, session, batch)
+						update_backend_heartbeat(network)
 
 			except Exception as e:
 				print('An error occurred!\n%s' % e)
 				print(traceback.format_exc())
+				update_backend_heartbeat(network)
 				await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
 		if scrape_only:
