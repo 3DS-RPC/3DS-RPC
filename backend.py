@@ -179,7 +179,7 @@ async def main():
 			except Exception as e:
 				print('An error occurred!\n%s' % e)
 				print(traceback.format_exc())
-				await anyio.sleep(2)
+				await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
 		if scrape_only:
 			print('Done scraping.')
@@ -188,13 +188,13 @@ async def main():
 		record_loop_end(users_processed_this_loop, network)
 		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
 		duration = get_backend_metrics(network)["last_loop_duration_seconds"] or 0
-		delay = min(300, max(60, users_processed_this_loop))
+		queue_batch_delay = min(300, max(60, users_processed_this_loop))
 
 		# The delay scales with queue size to prevent overwhelming Pretendo:
 		#   - Minimum delay: 60 seconds (prevents loops from running too fast for small queues)
 		#   - Maximum delay: 300 seconds / 5 minutes (prevents excessive waiting for very large queues)
-		print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s, applying delay of {delay}s")
-		await anyio.sleep(delay)
+		print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s, applying delay of {queue_batch_delay}s")
+		await anyio.sleep(queue_batch_delay)
 
 
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
