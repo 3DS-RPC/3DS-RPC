@@ -4,6 +4,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.middleware.proxy_fix import ProxyFix
 import sys, datetime, xmltodict, pickle, secrets
 
 from sqlalchemy import select, update, insert, delete
@@ -16,6 +17,17 @@ from api.metrics import init_db
 from database import *
 
 app = Flask(__name__)
+
+# Trust the reverse proxy's forwarded headers so Flask sees the scheme the
+# client actually used (https), not the backend's http. Without this, Flask
+# generates http:// redirects that browsers block as mixed content.
+app.wsgi_app = ProxyFix(
+    app.wsgi_app,
+    x_for=1,
+    x_proto=1,
+    x_host=1,
+    x_port=1,
+)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = get_db_url()
 
