@@ -340,7 +340,7 @@ def sidenav():
     nintendo_metrics = get_backend_metrics(NetworkType.NINTENDO)
     pretendo_metrics = get_backend_metrics(NetworkType.PRETENDO)
     
-    HEARTBEAT_THRESHOLD = 5 * 60  # 5 minutes
+    HEARTBEAT_THRESHOLD = 10 * 60  # 10 minutes
     
     def is_online(metrics: dict | None) -> bool:
         if not metrics:
