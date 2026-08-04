@@ -14,7 +14,7 @@ import anyio, sys, argparse, time
 from database import start_db_time, get_db_url, Friend, DiscordFriends
 
 # Time in seconds before a user is considered "offline"
-OFFLINE_THRESHOLD = 30 * 60  # 30 minutes
+OFFLINE_THRESHOLD = 60 * 60
 OFFLINE_CHECK_INTERVAL = 10  # Check offline users every 10 loops
 
 # Delay table with descriptive names for each delay purpose
@@ -105,14 +105,13 @@ async def main():
 		record_loop_start(len(queried_friends), network)
 
 		all_friends: list[QueriedFriend] = list(map(QueriedFriend, queried_friends))
-		current_time = time.time()
 		
 		# Split friends into online and offline queues
 		online_queue = []
 		offline_queue = []
 		
 		for friend in all_friends:
-			if friend.online and (current_time - friend.last_online <= OFFLINE_THRESHOLD):
+			if friend.online:
 				online_queue.append(friend)
 			else:
 				offline_queue.append(friend)
@@ -186,6 +185,16 @@ async def main():
 		if scrape_only:
 			print('Done scraping.')
 			break
+
+		# Safety net: clear any stale "online" flags whose last_online is older than the offline threshold.
+		session.execute(
+			update(Friend)
+			.where(Friend.network == network)
+			.where(Friend.online == True)
+			.where(Friend.last_online < time.time() - OFFLINE_THRESHOLD)
+			.values(online=False, title_id=0, upd_id=0)
+		)
+		session.commit()
 
 		record_loop_end(users_processed_this_loop, network)
 		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
