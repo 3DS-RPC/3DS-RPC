@@ -694,7 +694,7 @@ def consoles():
         result = db.session.scalar(stmt)
         data['consoles'].append({
             'fc': '-'.join(console[i:i+4] for i in range(0, 12, 4)),
-            'username': result.username,
+            'username': result.username if result else 'Not tracked',
             'active': active,
             'network': network.lower_name()
         })

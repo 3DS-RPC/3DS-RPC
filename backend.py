@@ -293,16 +293,19 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# This user must have removed us.
 		unfriended_codes.append(current_friend.friend_code)
 
-	# Batch delete unfriended users
+	# Stop tracking friends who removed us. We never delete the user's console
+	# (`discord_friends`), that is user-managed and may only be removed via the
+	# website's Delete button. We just unselect it so the bot stops using it, while the user keeps it listed.
 	if unfriended_codes:
 		for fc in unfriended_codes:
 			session.execute(delete(Friend).where(Friend.friend_code == fc).where(Friend.network == network))
-			session.execute(delete(DiscordFriends).where(
+			session.execute(update(DiscordFriends).where(
 				DiscordFriends.friend_code == fc,
 				DiscordFriends.network == network)
+				.values(active=False)
 			)
 		session.commit()
-		print(f'Removed {len(unfriended_codes)} unfriended users')
+		print(f'Stopped tracking {len(unfriended_codes)} unfriended users')
 
 	if len(added_friends) == 0:
 		# All of our friends removed us, so there's no more work to be done.
