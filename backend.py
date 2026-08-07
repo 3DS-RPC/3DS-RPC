@@ -261,8 +261,8 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	# Budget ~6s per user so the full remove+add sync of a Pretendo batch can
 	# complete (the intentional delays alone account for ~4s/user). If the
 	# timeout fired mid-sync, the un-added tail of the batch was wrongly treated
-	# as "unfriended". Minimum 2 minutes, maximum 10 minutes to prevent hangs.
-	timeout = min(600, max(120, 6 * len(current_rotation)))
+	# as "unfriended". Minimum 2 minutes, maximum 20 minutes to prevent hangs.
+	timeout = min(1200, max(120, 6 * len(current_rotation)))
 
 	# On the first batch after a restart, wipe the entire remote friendlist so a
 	# previously interrupted run can't leave stale friends behind and slowly fill
