@@ -697,7 +697,7 @@ def consoles():
         elif result:
             username = 'Awaiting first sync'
         else:
-            username = 'Not tracked - re-add the bot'
+            username = 'Not tracked - toggle the star to reconnect'
         data['consoles'].append({
             'fc': '-'.join(console[i:i+4] for i in range(0, 12, 4)),
             'username': username,
