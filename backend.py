@@ -28,6 +28,17 @@ DELAY_TABLE = {
     "MINIMUM_LOOP": 2,    # Minimum delay at end of each loop cycle
 }
 
+# How many consecutive loops a friend may be absent from the remote friendlist
+# before we consider them to have unfriended us. Protects against interrupted syncs incorrectly dropping friends (which would show
+# up as "Not tracked" on the consoles page).
+MISSING_STRIKE_LIMIT = 3
+
+# Consecutive loops each friend has been absent from the remote friendlist.
+_missing_strikes: dict[tuple, int] = {}
+
+# Whether we've already wiped the remote friendlist for this backend run.
+_startup_wipe_done: bool = False
+
 from api.private import NINTENDO_NEX_PASSWORD, NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME, NINTENDO_REGION, NINTENDO_LANGUAGE, PRETENDO_NEX_PASSWORD, NINTENDO_PID, NINTENDO_PID_HMAC, PRETENDO_SERIAL_NUMBER, PRETENDO_MAC_ADDRESS, PRETENDO_DEVICE_CERT, PRETENDO_DEVICE_NAME, PRETENDO_REGION, PRETENDO_LANGUAGE, PRETENDO_PID, PRETENDO_PID_HMAC
 from api import *
 from api.love2 import *
@@ -208,23 +219,67 @@ async def main():
 		await anyio.sleep(queue_batch_delay)
 
 
+async def wipe_friends_list(friends_client: friends.FriendsClientV1) -> None:
+	"""Remove every friend from the bot's remote friendlist.
+
+	Runs once when the backend starts. A previous run may have been stopped
+	mid-sync, leaving stale friends behind that the per-batch sync would have to
+	grind through under the batch timeout; clearing them up-front prevents the
+	remote friendlist from possibly filling up across restarts.
+	"""
+	print('Wiping the remote friendlist...')
+	with anyio.move_on_after(600) as timeout_scope:
+		for attempt in range(3):
+			try:
+				removables = await friends_client.get_all_friends()
+			except Exception as e:
+				print(f'Failed to list friends while wiping (attempt {attempt + 1}): {e}')
+				await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
+				continue
+
+			if not removables:
+				print('Remote friendlist already empty')
+				return
+
+			removed_count: int = 0
+			for friend in removables:
+				await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
+				try:
+					await friends_client.remove_friend_by_principal_id(friend.pid)
+					removed_count += 1
+				except Exception as e:
+					print(f'Failed to remove friend {friend.pid} while wiping: {e}')
+
+			print(f'Wiped {removed_count}/{len(removables)} friends')
+			if removed_count == len(removables):
+				return
+	if timeout_scope.cancelled_caught:
+		print('Wipe timed out; remote friendlist may still contain stale friends')
+
+
 async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
-	# TODO:(Phoenix): Assumes 3s per user (300s for 100 users). May need to increase to 6s/user (10 min per batch)
-	# If timeout is exceeded, the batch ends early (may stop mid-batch) to prevent hangs
-	# Minimum timeout: 60s (prevents batches from running too fast for small queues)
-	# Maximum timeout: 300s / 5 minutes (prevents excessive waiting for very large queues)
-	timeout = min(300, max(60, 3 * len(current_rotation)))
+	# Budget ~6s per user so the full remove+add sync of a Pretendo batch can
+	# complete (the intentional delays alone account for ~4s/user). If the
+	# timeout fired mid-sync, the un-added tail of the batch was wrongly treated
+	# as "unfriended". Minimum 2 minutes, maximum 20 minutes to prevent hangs.
+	timeout = min(1200, max(120, 6 * len(current_rotation)))
+
+	# On the first batch after a restart, wipe the entire remote friendlist so a
+	# previously interrupted run can't leave stale friends behind and slowly fill
+	# up the list across restarts.
+	global _startup_wipe_done
+	if not _startup_wipe_done:
+		_startup_wipe_done = True
+		await wipe_friends_list(friends_client)
+
 	with anyio.move_on_after(timeout) as timeout_scope:
-		# If we recently started, update our comment, and remove existing friends.
+		# If we recently started, update our comment.
 		if get_backend_metrics(network)["uptime_seconds"] < 30:
 			await anyio.sleep(DELAY_TABLE["INITIAL"])
 			await friends_client.update_comment('3dsrpc.com')
-			
+
 		print(f'Processing {len(current_rotation)} users with {timeout / 60:.1f} minutes timeout')
-		if get_backend_metrics(network)["uptime_seconds"] < 30:
-			await anyio.sleep(DELAY_TABLE["INITIAL"])
-			await friends_client.update_comment('3dsrpc.com')
-		
+
 		# Synchronize our current roster of friends.
 		# By bulk syncing friends, we can remove all existing friends,
 		# and then add our new friends with only one call.
@@ -233,6 +288,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# the bulk `sync_friends` RPC call, Pretendo's
 		# implementation is not optimized, and overloads their servers.
 		all_friend_pids: List[int] = [f.pid for f in current_rotation]
+		add_errors: List[tuple] = []
 		if network == NetworkType.PRETENDO:
 			# Clear our current, registered friends.
 			removables = await friends_client.get_all_friends()
@@ -249,7 +305,6 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 
 			# Individually add all pending friend PIDs.
 			added_count: int = 0
-			add_errors: List[tuple] = []
 			for friend_pid in all_friend_pids:
 				await anyio.sleep(DELAY_TABLE["ADD_FRIEND"])
 				try:
@@ -280,17 +335,32 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	current_friends_list = await friends_client.get_all_friends()
 	current_friend_pids: List[int] = [f.pid for f in current_friends_list]
 
-	# Determine which remote friends failed to add, and thus have unfriended us.
+	# Determine which remote friends are confirmed present, and which have been
+	# absent long enough to count as having unfriended us.
 	added_friends: List[QueriedFriend] = []
 	unfriended_codes: List[str] = []
+	failed_add_pids: set[int] = {pid for pid, _ in add_errors}
+
 	for current_friend in current_rotation:
 		current_pid: int = current_friend.pid
 
 		if current_pid in current_friend_pids:
 			added_friends.append(current_friend)
+			_missing_strikes.pop((network, current_friend.friend_code), None)
 			continue
 
-		# This user must have removed us.
+		# This user is missing from the remote friendlist. That could mean they
+		# removed us, but it might equally be a failure or an interrupted sync.
+		# Only stop tracking them once they've been absent
+		# across several consecutive loops without the add erroring out.
+		strike_key = (network, current_friend.friend_code)
+		strikes = _missing_strikes.get(strike_key, 0) + 1
+		if current_pid in failed_add_pids or strikes < MISSING_STRIKE_LIMIT:
+			_missing_strikes[strike_key] = strikes
+			print(f'{current_friend.friend_code} absent from friendlist ({strikes}/{MISSING_STRIKE_LIMIT})')
+			continue
+
+		_missing_strikes.pop(strike_key, None)
 		unfriended_codes.append(current_friend.friend_code)
 
 	# Stop tracking friends who removed us. We never delete the user's console

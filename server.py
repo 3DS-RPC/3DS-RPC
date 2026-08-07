@@ -692,9 +692,15 @@ def consoles():
             .where(Friend.network == network)
         )
         result = db.session.scalar(stmt)
+        if result and result.username:
+            username = result.username
+        elif result:
+            username = 'Awaiting first sync'
+        else:
+            username = 'Not tracked - toggle the star to reconnect'
         data['consoles'].append({
             'fc': '-'.join(console[i:i+4] for i in range(0, 12, 4)),
-            'username': result.username if result else 'Not tracked',
+            'username': username,
             'active': active,
             'network': network.lower_name()
         })
@@ -807,13 +813,27 @@ def toggler(friend_code: int):
         .where(Friend.network == network)
     )
     result = db.session.scalar(stmt)
-    if not result:
-        return 'failure!\nthat is not an existing friendCode!'
-    
+
     f = request.data.decode('utf-8').split(',')
     token = f[0]
     active = bool(int(f[1]))
     discord_id = user_from_token(token).id
+
+    if not result:
+        if not active:
+            return 'failure!\nthat is not an existing friendCode!'
+        # The backend automatically stopped tracking this friend (the bot
+        # detected an "unfriending" and removed the Friend row). Re-register the
+        # friend code so the backend picks it back up, then fall through to
+        # re-activate the console below. If the user never re-friended the bot,
+        # the backend will drop it again after the grace period.
+        try:
+            create_user(friend_code, network, True)
+        except Exception:
+            return 'failure!\nthat is not an existing friendCode!'
+        result = db.session.scalar(stmt)
+        if not result:
+            return 'failure!\nthat is not an existing friendCode!'
     stmt = (
         select(DiscordFriends)
         .where(DiscordFriends.id == discord_id)
