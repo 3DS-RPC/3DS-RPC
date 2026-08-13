@@ -14,9 +14,6 @@ from requests.exceptions import HTTPError
 
 API_ENDPOINT: str = 'https://discord.com/api/v10'
 
-# Time in seconds before a user is considered "offline"
-OFFLINE_THRESHOLD: int = 60 * 60
-
 with open('./cache/databases.dat', 'rb') as file:
 	t = pickle.loads(file.read())
 	titleDatabase = t[0]
@@ -293,7 +290,7 @@ while True:
 
 		api_client = APIClient(discord_user)
 
-		if not friend_data.online or time.time() - friend_data.last_online > OFFLINE_THRESHOLD:
+		if not friend_data.online:
 			# If the user is offline, and they lack an RPC session,
 			# there's nothing for us to do.
 			if not discord_user.rpc_session_token:
