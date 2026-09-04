@@ -326,7 +326,11 @@ while True:
 			continue
 
 		print('[FRIENDS] Creating RPC for Discord ID %s - %s on %s]' % (discord_friend.id, discord_friend.friend_code, discord_friend.network.lower_name()))
-		principal_id = friend_code_to_principal_id(friend_data.friend_code)
+		try:
+			principal_id = friend_code_to_principal_id(friend_data.friend_code)
+		except FriendCodeValidityError as e:
+			print(f'[FRIENDS] Skipping invalid friend code {friend_data.friend_code} on {friend_data.network.lower_name()}: {e}')
+			continue
 		mii = friend_data.mii
 		if mii:
 			mii = MiiData().mii_studio_url(mii)

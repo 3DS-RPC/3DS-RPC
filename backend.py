@@ -135,7 +135,12 @@ async def main():
 
 		record_loop_start(len(queried_friends), network)
 
-		all_friends: list[QueriedFriend] = list(map(QueriedFriend, queried_friends))
+		all_friends: list[QueriedFriend] = []
+		for queried_friend in queried_friends:
+			try:
+				all_friends.append(QueriedFriend(queried_friend))
+			except FriendCodeValidityError as e:
+				print(f'[{timestamp}] Skipping invalid friend code {queried_friend.friend_code} on {network.lower_name()}: {e}')
 		current_time = time.time()
 		
 		# Split friends into online and offline queues

@@ -195,6 +195,12 @@ def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
     if int(friend_code) == int(NINTENDO_BOT_FC):
         raise Exception('invalid FC')
 
+    # Reject friend codes that fail the 3DS checksum so bad rows never enter the DB.
+    try:
+        friend_code_to_principal_id(str(friend_code).zfill(12))
+    except FriendCodeValidityError:
+        raise Exception(f'invalid FC: {str(friend_code).zfill(12)}')
+
     try:
         if not add_new_instance:
             raise Exception('UNIQUE constraint failed: friends.friendCode')
