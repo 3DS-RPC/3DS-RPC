@@ -136,11 +136,23 @@ async def main():
 		record_loop_start(len(queried_friends), network)
 
 		all_friends: list[QueriedFriend] = []
+		invalid_codes: list[str] = []
 		for queried_friend in queried_friends:
 			try:
 				all_friends.append(QueriedFriend(queried_friend))
 			except FriendCodeValidityError as e:
+				invalid_codes.append(queried_friend.friend_code)
 				print(f'[{timestamp}] Skipping invalid friend code {queried_friend.friend_code} on {network.lower_name()}: {e}')
+
+		if invalid_codes:
+			for fc in invalid_codes:
+				session.execute(delete(Friend).where(Friend.friend_code == fc).where(Friend.network == network))
+				session.execute(delete(DiscordFriends).where(
+					DiscordFriends.friend_code == fc,
+					DiscordFriends.network == network)
+				)
+			session.commit()
+			print(f'[{timestamp}] Dropped {len(invalid_codes)} invalid friend code(s) from {network.lower_name()}')
 		current_time = time.time()
 		
 		# Split friends into online and offline queues
