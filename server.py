@@ -187,6 +187,13 @@ def cache_titles():
     print('[Saved database to file]')
 
 
+# Validate a friend code and return it normalized to 12 digits.
+def validate_friend_code(friend_code) -> str:
+    fc = str(friend_code).zfill(12)
+    friend_code_to_principal_id(fc)
+    return fc
+
+
 # Create entry in database with friendCode
 def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
     # Make sure the user isn't trying to create any registered bot friend code.
@@ -197,7 +204,7 @@ def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
 
     # Reject friend codes that fail the 3DS checksum so bad rows never enter the DB.
     try:
-        friend_code_to_principal_id(str(friend_code).zfill(12))
+        validate_friend_code(friend_code)
     except FriendCodeValidityError:
         raise Exception(f'invalid FC: {str(friend_code).zfill(12)}')
 
@@ -772,7 +779,7 @@ def user_page(friend_code: str):
     try:
         network = name_to_network_type(request.args.get('network'))
 
-        friend_code_int = int(friend_code.replace('-', ''))
+        friend_code_int = int(validate_friend_code(friend_code.replace('-', '')))
         # Register the friend immediately so the backend starts scraping their
         # profile as soon as possible, rather than only once a console reports it.
         create_user(friend_code_int, network, True)
@@ -821,6 +828,8 @@ def terms():
 @limiter.limit(new_user_limit)
 def new_user(friend_code: int, network: int = -1, user_check: bool = True):
     try:
+        validate_friend_code(friend_code)
+
         if network == -1:
             network = NetworkType.NINTENDO
 
@@ -932,10 +941,14 @@ def active_consoles():
 @limiter.limit(toggler_limit)
 def toggler(friend_code: int):
     network = NetworkType.NINTENDO
-    if request.data.decode('utf-8').split(',')[2]:
-        network = name_to_network_type(request.data.decode('utf-8').split(',')[2])
     try:
-        fc = str(principal_id_to_friend_code(friend_code_to_principal_id(friend_code))).zfill(12)
+        body = request.data.decode('utf-8').split(',')
+        if len(body) > 2 and body[2]:
+            network = name_to_network_type(body[2])
+    except:
+        pass
+    try:
+        fc = validate_friend_code(friend_code)
     except:
         return 'failure!\nthat is not a real friendCode!'
     stmt = (
@@ -1007,7 +1020,10 @@ def toggler(friend_code: int):
 @app.route('/api/delete/<int:friend_code>/', methods=['POST'])
 @limiter.limit(toggler_limit)
 def deleter(friend_code: int):
-    fc = str(principal_id_to_friend_code(friend_code_to_principal_id(friend_code))).zfill(12)
+    try:
+        fc = validate_friend_code(friend_code)
+    except:
+        return 'failure!\nthat is not a real friendCode!'
     if not ',' in request.data.decode('utf-8'): # Old API compatiblity. In the future this should be depercated.
         token = request.data.decode('utf-8')
         discord_id = user_from_token(token).id
@@ -1101,7 +1117,7 @@ def local_image_cdn(file: str):
 @limiter.limit(new_user_limit)
 def login():
     try:
-        fc = str(principal_id_to_friend_code(friend_code_to_principal_id(request.form['fc']))).zfill(12)
+        fc = validate_friend_code(request.form['fc'])
         if request.form['network'] is None:
             network = NetworkType.NINTENDO
         else:
