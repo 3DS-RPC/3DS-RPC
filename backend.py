@@ -28,10 +28,10 @@ DELAY_TABLE = {
     "MINIMUM_LOOP": 2,    # Minimum delay at end of each loop cycle
 }
 
-# How many consecutive loops a friend may be absent from the remote friendlist
+# How many consecutive full-loop checks a friend may be absent from the remote friendlist
 # before we consider them to have unfriended us. Protects against interrupted syncs incorrectly dropping friends (which would show
 # up as "Not tracked" on the consoles page).
-MISSING_STRIKE_LIMIT = 3
+MISSING_STRIKE_LIMIT = 10
 
 # Consecutive loops each friend has been absent from the remote friendlist.
 _missing_strikes: dict[tuple, int] = {}
@@ -169,7 +169,8 @@ async def main():
 		
 		# Determine which queue to process based on loop counter
 		current_metrics = get_backend_metrics(network)
-		if current_metrics["loop_counter"] % OFFLINE_CHECK_INTERVAL == 0:
+		is_full_loop = current_metrics["loop_counter"] % OFFLINE_CHECK_INTERVAL == 0
+		if is_full_loop:
 			current_rotation = all_friends
 			print(f'[{timestamp}] Loop {current_metrics["loop_counter"]}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
 		else:
@@ -224,7 +225,7 @@ async def main():
 						friends_client = friends.FriendsClientV1(client)
 
 						# Begin our main loop!
-						await main_friends_loop(friends_client, session, batch)
+						await main_friends_loop(friends_client, session, batch, full_loop=is_full_loop)
 						update_backend_heartbeat(network)
 
 			except Exception as e:
@@ -287,7 +288,27 @@ async def wipe_friends_list(friends_client: friends.FriendsClientV1) -> None:
 		print('Wipe timed out; remote friendlist may still contain stale friends')
 
 
-async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]):
+def update_strike(friend_code: str, present: bool, full_loop: bool, add_failed: bool) -> bool:
+	"""Update a friend's strike counter from the latest friendlist poll."""
+	strike_key = (network, friend_code)
+	if present:
+		_missing_strikes.pop(strike_key, None)
+		return False
+	if not full_loop:
+		return False
+	if add_failed:
+		_missing_strikes.pop(strike_key, None)
+		return False
+	strikes = _missing_strikes.get(strike_key, 0) + 1
+	if strikes < MISSING_STRIKE_LIMIT:
+		_missing_strikes[strike_key] = strikes
+		print(f'{friend_code} absent from friendlist ({strikes}/{MISSING_STRIKE_LIMIT})')
+		return False
+	_missing_strikes.pop(strike_key, None)
+	return True
+
+
+async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend], full_loop: bool):
 	# Budget ~6s per user so the full remove+add sync of a Pretendo batch can
 	# complete (the intentional delays alone account for ~4s/user). If the
 	# timeout fired mid-sync, the un-added tail of the batch was wrongly treated
@@ -365,6 +386,11 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	current_friends_list = await friends_client.get_all_friends()
 	current_friend_pids: List[int] = [f.pid for f in current_friends_list]
 
+	# An empty friendlist is almost certainly an outage or a failed sync, not a
+	# mass unfriend. A later successful poll resets the counters.
+	if not current_friend_pids:
+		return
+
 	# Determine which remote friends are confirmed present, and which have been
 	# absent long enough to count as having unfriended us.
 	added_friends: List[QueriedFriend] = []
@@ -372,26 +398,11 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 	failed_add_pids: set[int] = {pid for pid, _ in add_errors}
 
 	for current_friend in current_rotation:
-		current_pid: int = current_friend.pid
-
-		if current_pid in current_friend_pids:
+		present = current_friend.pid in current_friend_pids
+		if present:
 			added_friends.append(current_friend)
-			_missing_strikes.pop((network, current_friend.friend_code), None)
-			continue
-
-		# This user is missing from the remote friendlist. That could mean they
-		# removed us, but it might equally be a failure or an interrupted sync.
-		# Only stop tracking them once they've been absent
-		# across several consecutive loops without the add erroring out.
-		strike_key = (network, current_friend.friend_code)
-		strikes = _missing_strikes.get(strike_key, 0) + 1
-		if current_pid in failed_add_pids or strikes < MISSING_STRIKE_LIMIT:
-			_missing_strikes[strike_key] = strikes
-			print(f'{current_friend.friend_code} absent from friendlist ({strikes}/{MISSING_STRIKE_LIMIT})')
-			continue
-
-		_missing_strikes.pop(strike_key, None)
-		unfriended_codes.append(current_friend.friend_code)
+		if update_strike(current_friend.friend_code, present, full_loop, current_friend.pid in failed_add_pids):
+			unfriended_codes.append(current_friend.friend_code)
 
 	# Stop tracking friends who removed us. We never delete the user's console
 	# (`discord_friends`), that is user-managed and may only be removed via the
