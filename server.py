@@ -5,7 +5,7 @@ from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.middleware.proxy_fix import ProxyFix
-import sys, json, datetime, xmltodict, pickle, secrets
+import sys, json, datetime, xmltodict, pickle, secrets, traceback
 from urllib.parse import urlencode
 
 from sqlalchemy import select, update, insert, delete
@@ -72,6 +72,46 @@ start_db_time(None, NetworkType.PRETENDO)
 @app.errorhandler(404)
 def handler404(e):
     return render_template('dist/404.html')
+
+
+def redact_sensitive(text: str) -> str:
+    import api.private as private
+
+    for name, value in vars(private).items():
+        if isinstance(value, bytes):
+            value = value.hex()
+        if not isinstance(value, str):
+            continue
+        if len(value) < 8:
+            continue
+        text = text.replace(value, f'<REDACTED:{name}>')
+    return text
+
+
+@app.errorhandler(500)
+def handler500(e):
+    exc = getattr(e, 'original_exception', e)
+    error = traceback.format_exception(exc)
+    if isinstance(error, list):
+        error = ''.join(error)
+    status = getattr(e, 'code', 500) or 500
+    try:
+        return render_template(
+            'dist/500.html',
+            error=redact_sensitive(error),
+            request_method=request.method,
+            request_path=request.path,
+        ), status
+    except Exception:
+        return f'<h1>{status} Internal Server Error</h1><p>Something went wrong.</p>', status
+
+
+@app.errorhandler(Exception)
+def handler_error(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException) and e.code and 400 <= e.code < 500:
+        return e.get_response()
+    return handler500(e)
 
 
 disable_backend_warnings = False

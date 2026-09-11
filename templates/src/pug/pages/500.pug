@@ -1,0 +1,18 @@
+extends ../layouts/error.pug
+
+block config
+    - var pageTitle = "500 Internal Server Error"
+
+block content
+    .container
+        .row.justify-content-center
+            .col-lg-6
+                .text-center.mt-4
+                    p.lead Something went wrong on our end. Here's what the server said:
+                    p.mb-2
+                        strong Request:&nbsp;
+                        code {{ request_method if request_method is defined else 'GET' }}&nbsp;{{ request_path if request_path is defined else '/' }}
+                    pre.text-start.bg-dark.text-light.p-3.rounded(style='overflow-x: auto;') {{ error if error is defined else 'No error details available.' }}
+                    a(href='/')
+                        i.fas.fa-arrow-left.me-1
+                        | Return to Home
