@@ -46,6 +46,36 @@ init_db(db)
 # (See above with `from database import *`)
 migrate = Migrate(app, db, target_metadata=Base.metadata)
 
+
+def ensure_db_migrations():
+    """Apply any pending Alembic migrations before the app touches the DB."""
+    from alembic.config import Config as AlembicConfig
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from flask_migrate import upgrade
+
+    migrations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migrations')
+    config = AlembicConfig(os.path.join(migrations_dir, 'alembic.ini'))
+    config.set_main_option('script_location', migrations_dir)
+
+    script = ScriptDirectory.from_config(config)
+    head = script.get_current_head()
+
+    with app.app_context():
+        engine = db.engine
+        with engine.connect() as conn:
+            current = MigrationContext.configure(conn).get_current_revision()
+
+        if current == head:
+            print('[DB] Migrations up to date.')
+            return
+        print(f'[DB] Detected pending migrations: {current} -> {head}. Applying...')
+        upgrade(directory=migrations_dir, revision='head')
+        print('[DB] Migrations applied.')
+
+
+ensure_db_migrations()
+
 from api.metrics import metrics_bp
 
 # Register metrics blueprint
