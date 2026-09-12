@@ -54,6 +54,7 @@ PRETENDO_LANGUAGE:int = 1 # English
 CLIENT_ID:int = 0 # Taken from OAuth2 page
 CLIENT_SECRET:str = "" # Taken from OAuth2 page
 DISCORD_SCOPE:str = "activities.write" # OAuth2 scope(s), space-separated if multiple
+DISCORD_WEBHOOK_URL:str = ""
 
 #### SERVER-SPECIFIC ####
 # Finally, we're grabbing #
