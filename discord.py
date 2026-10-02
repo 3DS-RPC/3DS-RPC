@@ -40,7 +40,6 @@ class UserData:
 	game_description: str
 	username: str
 	mii_urls: Optional[dict]
-	last_accessed: int
 
 
 class DiscordSession:
@@ -75,8 +74,7 @@ class APIClient:
 
 
 	def update_presence(self, user_data: UserData, network: NetworkType):
-		last_accessed = user_data.last_accessed
-		if time.time() - last_accessed <= 30:
+		if time.time() - self.current_user.last_accessed <= 30:
 			print('[MANUAL RATE LIMITED]')
 			return False
 
@@ -345,8 +343,7 @@ while True:
 				game=title_data,
 				game_description=friend_data.game_description,
 				username=friend_data.username,
-				mii_urls=mii,
-				last_accessed=friend_data.last_accessed
+				mii_urls=mii
 			)
 
 			api_client.update_presence(discord_user_data, discord_friend.network)

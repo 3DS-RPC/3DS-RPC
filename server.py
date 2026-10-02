@@ -270,7 +270,7 @@ def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
             online=False,
             title_id='0',
             upd_id='0',
-            last_accessed=time.time() + 300,
+            last_accessed=time.time(),
             account_creation=time.time(),
             last_online=time.time(),
             favorite_game=0
@@ -278,13 +278,7 @@ def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
         db.session.commit()
     except Exception as e:
         if 'UNIQUE constraint failed: friends.friendCode' in str(e):
-            db.session.execute(
-                update(Friend)
-                .where(Friend.friend_code == str(friend_code).zfill(12))
-                .where(Friend.network == network)
-                .values(last_accessed=time.time())
-            )
-            db.session.commit()
+            pass
 
 
 def fetch_bearer_token(code: str):
