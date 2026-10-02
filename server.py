@@ -9,6 +9,7 @@ import sys, datetime, xmltodict, pickle, secrets
 from urllib.parse import urlencode, quote
 
 from sqlalchemy import select, update, insert, delete
+from sqlalchemy.exc import IntegrityError
 
 from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST, DISCORD_SCOPE
@@ -254,31 +255,42 @@ def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
     except FriendCodeValidityError:
         raise Exception(f'invalid FC: {str(friend_code).zfill(12)}')
 
+    friend_code = str(friend_code).zfill(12)
+
+    # Polling/viewing an existing console never creates a row, and must not
+    # touch last_accessed.
+    if not add_new_instance:
+        return
+
+    already_exists = db.session.scalar(
+        select(Friend)
+        .where(Friend.friend_code == friend_code)
+        .where(Friend.network == network)
+    )
+    if already_exists:
+        return
+
+    db.session.add(Friend(
+        friend_code=friend_code,
+        network=network,
+        online=False,
+        title_id='0',
+        upd_id='0',
+        last_accessed=time.time(),
+        account_creation=time.time(),
+        last_online=time.time(),
+        favorite_game=0
+    ))
     try:
-        if not add_new_instance:
-            raise Exception('UNIQUE constraint failed: friends.friendCode')
-        already_added_check = db.session.scalar(
-            select(Friend)
-            .where(Friend.friend_code == str(friend_code).zfill(12))
-            .where(Friend.network == network)
-        )
-        if already_added_check:
-            raise Exception('UNIQUE constraint failed: friends.friendCode')
-        db.session.add(Friend(
-            friend_code=str(friend_code).zfill(12),
-            network=network,
-            online=False,
-            title_id='0',
-            upd_id='0',
-            last_accessed=time.time(),
-            account_creation=time.time(),
-            last_online=time.time(),
-            favorite_game=0
-        ))
         db.session.commit()
-    except Exception as e:
-        if 'UNIQUE constraint failed: friends.friendCode' in str(e):
-            pass
+    except IntegrityError:
+        # Another request inserted the same console between our check and insert.
+        db.session.rollback()
+    except Exception:
+        # Surface unexpected failures to the Discord webhook instead of hiding them.
+        app.logger.error('create_user failed for %s on %s', friend_code, network.lower_name(), exc_info=True)
+        db.session.rollback()
+        raise
 
 
 def fetch_bearer_token(code: str):
