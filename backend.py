@@ -408,42 +408,56 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		# implementation is not optimized, and overloads their servers.
 		all_friend_pids: List[int] = [f.pid for f in current_rotation]
 		add_errors: List[tuple] = []
-		if network == NetworkType.PRETENDO:
-			# Clear our current, registered friends.
-			removables = await friends_client.get_all_friends()
-			removed_count: int = 0
-			for friend in removables:
-				await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
+
+		# Reconcile the remote friendlist against what we want to track. When
+		# our tracked set fits within the 100-friend cap and hasn't changed, the
+		# friendlist already matches, so we skip all add/remove work and go
+		# straight to presence. This avoids clearing and re-adding the same
+		# accounts every loop (which is especially expensive on Pretendo).
+		current_friends_list = await friends_client.get_all_friends()
+		existing_pids = {friend.pid for friend in current_friends_list}
+		desired_pids = set(all_friend_pids)
+
+		if existing_pids != desired_pids:
+			if network == NetworkType.PRETENDO:
+				# Remove friends we no longer track, add friends that are missing.
+				removed_count: int = 0
+				for friend in current_friends_list:
+					if friend.pid in desired_pids:
+						continue
+					await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
+					try:
+						await friends_client.remove_friend_by_principal_id(friend.pid)
+						removed_count += 1
+					except Exception as e:
+						print(f'Failed to remove friend {friend.pid}: {e}')
+
+				if removed_count:
+					print(f'Removed {removed_count} departed friend(s)')
+
+				added_count: int = 0
+				for friend_pid in all_friend_pids:
+					if friend_pid in existing_pids:
+						continue
+					await anyio.sleep(DELAY_TABLE["ADD_FRIEND"])
+					try:
+						await friends_client.add_friend_by_principal_id(0, friend_pid)
+						added_count += 1
+					except Exception as e:
+						add_errors.append((friend_pid, e))
+						print(f'Failed to add friend {friend_pid}: {e}')
+
+				if added_count or add_errors:
+					print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
+			else:
+				# We expect the remote NEX implementation to remove all existing
+				# relationships, and replace them with the 100 PIDs specified.
+				# This path is currently only for Nintendo.
 				try:
-					await friends_client.remove_friend_by_principal_id(friend.pid)
-					removed_count += 1
+					await friends_client.sync_friend(0, all_friend_pids, [])
 				except Exception as e:
-					print(f'Failed to remove friend {friend.pid}: {e}')
-
-			print(f'Removed {removed_count}/{len(removables)} friends')
-
-			# Individually add all pending friend PIDs.
-			added_count: int = 0
-			for friend_pid in all_friend_pids:
-				await anyio.sleep(DELAY_TABLE["ADD_FRIEND"])
-				try:
-					await friends_client.add_friend_by_principal_id(0, friend_pid)
-					added_count += 1
-				except Exception as e:
-					add_errors.append((friend_pid, e))
-					print(f'Failed to add friend {friend_pid}: {e}')
-
-			if add_errors:
-				print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
-		else:
-			# We expect the remote NEX implementation to remove all existing
-			# relationships, and replace them with the 100 PIDs specified.
-			# This path is currently only for Nintendo.
-			try:
-				await friends_client.sync_friend(0, all_friend_pids, [])
-			except Exception as e:
-				print(f'Failed to sync friends: {e}')
-			await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
+					print(f'Failed to sync friends: {e}')
+				await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
 	if timeout_scope.cancelled_caught:
 		print(f'Batch timed out after {timeout} seconds')
