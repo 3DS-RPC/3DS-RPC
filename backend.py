@@ -559,8 +559,8 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 		
 		# A friend with no username yet has never had their profile scraped, so
 		# fetch it on the first loop they're processed instead of waiting for the
-		# last_accessed throttle (which active 3DS polling defeats by refreshing
-		# last_accessed on every request).
+		# last_accessed throttle (only the backend's own scrape refreshes
+		# last_accessed; profile views/polls must not).
 		work: bool = False
 		if time.time() - current_friend.last_accessed >= 600 or scrape_only or current_friend.username is None:
 			work = True
@@ -622,7 +622,8 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				username=upd['username'],
 				message=upd['message'],
 				mii=upd['mii'],
-				favorite_game=upd['favorite_game']
+				favorite_game=upd['favorite_game'],
+				last_accessed=time.time()
 			)
 		)
 	session.commit()
