@@ -6,7 +6,7 @@ from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.middleware.proxy_fix import ProxyFix
 import sys, datetime, xmltodict, pickle, secrets
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 from sqlalchemy import select, update, insert, delete
 
@@ -757,7 +757,7 @@ def connect():
             'response_type': 'code',
             'redirect_uri': '%s/authorize' % HOST,
             'scope': DISCORD_SCOPE,
-        }),
+        }, quote_via=quote),
     }
     return render_template('dist/connect.html', data=data)
 
