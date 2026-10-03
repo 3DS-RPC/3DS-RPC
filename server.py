@@ -110,6 +110,7 @@ setup_error_webhook(app.logger)
 
 @app.errorhandler(500)
 def handler500(e):
+    app.logger.exception('Unhandled 500 error', exc_info=e)
     status = getattr(e, 'code', 500) or 500
     return f'<h1>{status} Internal Server Error</h1><p>Something went wrong.</p>', status
 
@@ -119,6 +120,7 @@ def handler_error(e):
     from werkzeug.exceptions import HTTPException
     if isinstance(e, HTTPException) and e.code and 400 <= e.code < 500:
         return e.get_response()
+    app.logger.exception('Unhandled exception', exc_info=e)
     return handler500(e)
 
 
