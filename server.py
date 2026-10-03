@@ -413,6 +413,10 @@ def sidenav():
     def is_online(metrics: dict | None) -> bool:
         if not metrics:
             return False
+        # The backend explicitly reports its network as down (e.g. the game
+        # server is unreachable), regardless of heartbeat recency.
+        if metrics.get('network_status') == 'down':
+            return False
         last_seen = metrics.get('last_seen', 0)
         return time.time() - last_seen < HEARTBEAT_THRESHOLD
     

@@ -46,6 +46,7 @@ class BackendMetrics:
     current_loop_queue: int = 0
     last_loop_queue: int = 0
     loop_counter: int = 0
+    network_status: str = 'up'
 
     @property
     def uptime_seconds(self) -> float:
@@ -95,6 +96,19 @@ def update_backend_heartbeat(network: NetworkType) -> None:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record:
             record.last_loop_end_time = time.time()
+            session.commit()
+
+
+def set_backend_status(network: NetworkType, status: str) -> None:
+    """Mark the backend for a network as 'up' or 'down' (e.g. the game server is unreachable)."""
+    from database import BackendMetrics as DBBackendMetrics
+    if db is None:
+        return
+    _ensure_metrics_record(network)
+    with db.session() as session:
+        record = session.query(DBBackendMetrics).filter_by(network=network).first()
+        if record and record.network_status != status:
+            record.network_status = status
             session.commit()
 
 
@@ -193,7 +207,8 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
             'last_loop_duration_seconds': metrics.last_loop_duration,
             'current_loop_queue': metrics.current_loop_queue,
             'last_loop_queue': metrics.last_loop_queue,
-            'loop_counter': metrics.loop_counter
+            'loop_counter': metrics.loop_counter,
+            'network_status': metrics.network_status
         }
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
@@ -209,7 +224,8 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
                 'last_loop_duration_seconds': max(0, duration) if duration is not None else None,
                 'current_loop_queue': record.current_loop_queue,
                 'last_loop_queue': record.last_loop_queue,
-                'loop_counter': record.loop_counter
+                'loop_counter': record.loop_counter,
+                'network_status': record.network_status
             }
         return None
 

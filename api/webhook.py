@@ -1,6 +1,8 @@
 import datetime
+import hashlib
 import logging
 import os
+import time
 
 import requests
 from flask import has_request_context, request
@@ -23,17 +25,40 @@ def redact_sensitive(text: str) -> str:
 
 
 class DiscordWebhookHandler(logging.Handler):
-    """Posts ERROR+ log records to a Discord webhook as an embed."""
+    """Posts ERROR+ log records to a Discord webhook as an embed.
+
+    Identical messages are rate-limited so a repeating error (e.g. a downed
+    game server) can't spam the channel: each unique message is posted at most
+    once per COOLDOWN seconds.
+    """
+
+    COOLDOWN: float = 5 * 60
 
     def __init__(self, webhook_url: str = DISCORD_WEBHOOK_URL, level: int = logging.ERROR):
         super().__init__(level=level)
         self.webhook_url = webhook_url
+        self._last_sent: dict[str, float] = {}
+
+    def _dedupe(self, message: str) -> bool:
+        """Return True if this message should be posted (not a recent duplicate)."""
+        now = time.time()
+        key = hashlib.sha256(message.encode()).hexdigest()
+        last = self._last_sent.get(key)
+        if last is not None and now - last < self.COOLDOWN:
+            return False
+        self._last_sent[key] = now
+        # Drop expired entries to keep the cache bounded.
+        if len(self._last_sent) > 100:
+            self._last_sent = {k: v for k, v in self._last_sent.items() if now - v < self.COOLDOWN}
+        return True
 
     def emit(self, record: logging.LogRecord) -> None:
         if not self.webhook_url:
             return
         try:
             message = redact_sensitive(self.format(record))
+            if not self._dedupe(message):
+                return
             if len(message) > 4000:
                 message = message[-4000:] + '\n...(truncated)'
             fields = []

@@ -61,8 +61,56 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics, update_backend_heartbeat
+from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics, update_backend_heartbeat, set_backend_status
 from api.networks import NetworkType
+
+# When a game server (e.g. Pretendo) is down, its NASC endpoint returns an HTML or bare error page instead of a form-encoded response.
+import nintendo.nasc as _nasc
+from anynet import http as _http
+
+
+class NASCUnavailableError(Exception):
+	"""Raised when the NASC server returns a non-form (malformed) response."""
+
+	def __init__(self, status_code: int, body: str):
+		self.status_code = status_code
+		self.body = body
+		super().__init__(
+			f"NASC server returned an invalid response (HTTP {status_code}): {body[:200]!r}"
+		)
+
+
+async def _tolerant_nasc_request(self, req):
+	req.form = _nasc.encode_form(req.form)
+	response = await _http.request(self.url, req, self.context)
+	form = _http.formdecode(response.text)
+
+	if form.get("returncd") is None:
+		raise NASCUnavailableError(response.status_code, response.text)
+	
+	# Drop empty fields (formdecode yields None for fields without a value).
+	form = {key: value for key, value in form.items() if value is not None}
+
+	response.form = _nasc.decode_form(form)
+	return_code = response.form["returncd"].decode()
+
+	if return_code == "null" or int(return_code) != 1:
+		raise _nasc.NASCError(response.status_code, response.form)
+	
+	return response
+
+
+_nasc.NASCClient.request = _tolerant_nasc_request
+
+
+def is_network_outage(exc: Exception) -> bool:
+	"""True if the exception indicates the game server is down or unreachable."""
+	if isinstance(exc, NASCUnavailableError):
+		return True
+	if isinstance(exc, _nasc.NASCError):
+		return exc.return_code == 110
+	return isinstance(exc, (OSError, TimeoutError))
+
 
 class QueriedFriend:
 	""" A QueriedFriend holds the friend code, PID, and last access time for a given Friend. """
@@ -114,6 +162,10 @@ async def main():
 	
 	# Reset metrics on startup
 	reset_metrics(network)
+
+	# Consecutive loop cycles the game server has been unreachable. Used to
+	# keep outage messages concise and calibrate backoff.
+	consecutive_outages = 0
 
 	while True:
 		time.sleep(1)
@@ -183,6 +235,8 @@ async def main():
 			record_loop_end(0, network)
 			continue
 
+		outage_detected = False
+
 		for i in range(0, len(current_rotation), 100):
 			batch = current_rotation[i:i+100]
 
@@ -228,9 +282,20 @@ async def main():
 						await main_friends_loop(friends_client, session, batch, full_loop=is_full_loop)
 						update_backend_heartbeat(network)
 
+				consecutive_outages = 0
+				set_backend_status(network, 'up')
+
 			except Exception as e:
-				print('An error occurred!\n%s' % e)
-				print(traceback.format_exc())
+				if is_network_outage(e):
+					outage_detected = True
+					consecutive_outages += 1
+					if consecutive_outages == 1:
+						set_backend_status(network, 'down')
+					print(f'[{timestamp}] {network.lower_name()} is unreachable (attempt {consecutive_outages}): {e}')
+				else:
+					consecutive_outages = 0
+					print('An error occurred!\n%s' % e)
+					print(traceback.format_exc())
 				update_backend_heartbeat(network)
 				await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
@@ -246,7 +311,10 @@ async def main():
 		# The delay scales with queue size to prevent overwhelming Pretendo:
 		#   - Minimum delay: 60 seconds (prevents loops from running too fast for small queues)
 		#   - Maximum delay: 300 seconds / 5 minutes (prevents excessive waiting for very large queues)
-		print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s, applying delay of {queue_batch_delay}s")
+		if outage_detected:
+			print(f"[{timestamp}] {network.lower_name()} is down; retrying in {queue_batch_delay}s")
+		else:
+			print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s, applying delay of {queue_batch_delay}s")
 		await anyio.sleep(queue_batch_delay)
 
 

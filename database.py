@@ -68,6 +68,7 @@ class BackendMetrics(Base):
     current_loop_queue: Mapped[int] = mapped_column("current_loop_queue", Integer(), nullable=False, default=0)
     last_loop_queue: Mapped[int] = mapped_column("last_loop_queue", Integer(), nullable=False, default=0)
     backend_start_time: Mapped[float] = mapped_column("backend_start_time", nullable=False, default=0.0)
+    network_status: Mapped[str] = mapped_column("network_status", String(16), nullable=False, default='up')
 
 
 class DiscordFriends(Base):
