@@ -344,7 +344,8 @@ def create_discord_user(code: str, response: dict = None):
     headers = {
         'Authorization': 'Bearer %s' % response['access_token'],
     }
-    new = requests.get('https://discord.com/api/users/@me', headers=headers)
+    new = requests.get('%s/users/@me' % API_ENDPOINT, headers=headers)
+    new.raise_for_status()
     user = new.json()
     token = secrets.token_hex(20)
     try:
