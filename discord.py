@@ -1,5 +1,7 @@
 import sys, pickle
 import logging
+import requests
+import json
 from typing import Optional
 
 from api.love2 import *
@@ -16,9 +18,10 @@ from requests.exceptions import HTTPError
 
 API_ENDPOINT: str = 'https://discord.com/api/v10'
 
-# Loop pacing and Discord API limits.
-LOOP_DELAY = 2
+# How often to run a scan pass when idle, plus Discord API limits.
+LOOP_INTERVAL = 2
 REQUEST_TIMEOUT = 30
+MAX_RATE_LIMIT_RETRIES = 5   # how many times to retry a 429 using Retry-After
 MANUAL_RATE_LIMIT = 30       # seconds between manual presence updates/resets
 PRESENCE_MIN_INTERVAL = 60   # seconds before re-issuing a presence update
 TOKEN_LIFETIME = 604800      # Discord OAuth2 access token lifetime (7 days)
@@ -31,6 +34,64 @@ logging.basicConfig(level=logging.INFO)
 # Tracks the last reset_presence attempt per user id so users whose resets keep
 # failing aren't hammered with requests on every single loop pass.
 _last_reset_attempts: dict = {}
+
+# Reused HTTP session for Discord API calls.
+http = requests.Session()
+
+
+def _retry_after_seconds(response) -> float:
+	"""How long Discord wants us to wait before retrying after a 429."""
+	retry_after = response.headers.get('Retry-After')
+	if retry_after is None:
+		try:
+			retry_after = str(response.json()['retry_after'])
+		except (ValueError, KeyError):
+			retry_after = response.headers.get('X-RateLimit-Reset-After')
+	return float(retry_after or 0)
+
+
+def _respect_rate_limit(response) -> None:
+	"""Sleep until the current rate-limit bucket resets if we've exhausted it."""
+	remaining = response.headers.get('X-RateLimit-Remaining')
+	if remaining is None or int(remaining) > 0:
+		return
+
+	reset_after = response.headers.get('X-RateLimit-Reset-After')
+	if reset_after is None:
+		reset = response.headers.get('X-RateLimit-Reset')
+		if reset is None:
+			return
+		reset_after = max(0.0, float(reset) - time.time())
+	log.warning('[RATE LIMIT EXHAUSTED] waiting %ss', reset_after)
+	time.sleep(float(reset_after))
+
+
+def discord_post(url: str, bearer_token: str, data: dict, content_type: str = 'application/json'):
+	"""POST to the Discord API, honoring its rate-limit response headers."""
+	headers = {
+		'Content-Type': content_type,
+	}
+	if bearer_token:
+		headers['Authorization'] = 'Bearer %s' % bearer_token
+	payload = json.dumps(data) if content_type == 'application/json' else data
+
+	response = None
+	for attempt in range(MAX_RATE_LIMIT_RETRIES):
+		response = http.post(url, data=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+		if response.status_code == 429:
+			retry_after = _retry_after_seconds(response)
+			log.warning(
+				'[RATE LIMITED] %s (attempt %s/%s), waiting %ss',
+				url, attempt + 1, MAX_RATE_LIMIT_RETRIES, retry_after
+			)
+			time.sleep(retry_after)
+			continue
+		# Pace proactively if we've exhausted this bucket.
+		_respect_rate_limit(response)
+		return response
+
+	response.raise_for_status()
+	return response
 
 with open('./cache/databases.dat', 'rb') as file:
 	t = pickle.loads(file.read())
@@ -145,12 +206,7 @@ class APIClient:
 		if self.current_user.rpc_session_token:
 			data['token'] = self.current_user.rpc_session_token
 
-		headers = {
-			'Authorization': 'Bearer %s' % self.current_user.bearer_token,
-			'Content-Type': 'application/json',
-		}
-
-		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers, timeout=REQUEST_TIMEOUT)
+		r = discord_post('%s/users/@me/headless-sessions' % API_ENDPOINT, self.current_user.bearer_token, data)
 		r.raise_for_status()
 
 		response = r.json()
@@ -165,18 +221,13 @@ class APIClient:
 			log.info('[MANUAL RATE LIMITED] %s', self.current_user.id)
 			return False
 
-		headers = {
-			'Authorization': 'Bearer %s' % self.current_user.bearer_token,
-			'Content-Type': 'application/json',
-		}
-
 		# Discord doesn't always properly terminate activity sessions anymore,
 		# so we explicitly clear them first to avoid ghost/stuck presence before disconnecting
 		data = {
 			'activities': [],
 			'token': self.current_user.rpc_session_token,
 		}
-		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers, timeout=REQUEST_TIMEOUT)
+		r = discord_post('%s/users/@me/headless-sessions' % API_ENDPOINT, self.current_user.bearer_token, data)
 
 		try:
 			r.raise_for_status()
@@ -192,7 +243,7 @@ class APIClient:
 		data = {
 			'token': self.current_user.rpc_session_token,
 		}
-		r = requests.post('%s/users/@me/headless-sessions/delete' % API_ENDPOINT, data=json.dumps(data), headers=headers, timeout=REQUEST_TIMEOUT)
+		r = discord_post('%s/users/@me/headless-sessions/delete' % API_ENDPOINT, self.current_user.bearer_token, data)
 
 		try:
 			r.raise_for_status()
@@ -214,10 +265,7 @@ class APIClient:
 			'grant_type': 'refresh_token',
 			'refresh_token': current_refresh_token,
 		}
-		headers = {
-			'Content-Type': 'application/x-www-form-urlencoded',
-		}
-		json_response = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, timeout=REQUEST_TIMEOUT)
+		json_response = discord_post('%s/oauth2/token' % API_ENDPOINT, '', data, 'application/x-www-form-urlencoded')
 		json_response.raise_for_status()
 		response = json_response.json()
 
@@ -259,7 +307,6 @@ def run_loop_pass():
 		api_client = APIClient(oauth_user)
 		try:
 			api_client.refresh_bearer()
-			time.sleep(LOOP_DELAY * 2)
 		except HTTPError as e:
 			# Only a 400/401/403 means the refresh token itself is invalid
 			# (e.g. the user revoked access), so only then should we delete the
@@ -269,7 +316,6 @@ def run_loop_pass():
 				api_client.delete_discord_user()
 			else:
 				log.warning('[REFRESH FAILURE] %s', e)
-				time.sleep(LOOP_DELAY * 2)
 
 	# Inactive users have removed our bot: the backend removed them
 	# from both `friends` and `discord_friends`, but they still
@@ -292,12 +338,9 @@ def run_loop_pass():
 		try:
 			log.info('[INACTIVES] Resetting %s', inactive_user.id)
 			api_client.reset_presence()
-			time.sleep(LOOP_DELAY)
 		except HTTPError as e:
 			log.warning('[INACTIVE RESET FAILURE] %s', e)
 			# api_client.delete_discord_user()
-
-	time.sleep(LOOP_DELAY)
 
 	# Finally, we'll refresh presences for all remaining users.
 	# Fetch active Discord connections together with their account and friend
@@ -317,7 +360,7 @@ def run_loop_pass():
 	).all()
 
 	if len(discord_rows) < 1:
-		time.sleep(LOOP_DELAY)
+		time.sleep(LOOP_INTERVAL)
 		return
 
 	for discord_friend, discord_user, friend_data in discord_rows:
@@ -337,7 +380,6 @@ def run_loop_pass():
 			try:
 				log.info('[FRIENDS] Resetting presence for %s on %s', friend_data.friend_code, friend_data.network.lower_name())
 				api_client.reset_presence()
-				time.sleep(LOOP_DELAY)
 			except HTTPError as e:
 				log.warning('[FRIEND RESET FAILURE] %s', e)
 				# api_client.delete_discord_user()
@@ -367,14 +409,12 @@ def run_loop_pass():
 			)
 
 			api_client.update_presence(discord_user_data, discord_friend.network)
-			time.sleep(LOOP_DELAY)
 		except HTTPError as e:
 			log.warning('[FRIEND PRESENCE FAILURE] %s', e)
 			# api_client.delete_discord_user()
-		time.sleep(LOOP_DELAY)
 
-	# Sleep for 5x our loop delay.
-	time.sleep(LOOP_DELAY * 5)
+	# Pace the loop before the next scan pass.
+	time.sleep(LOOP_INTERVAL)
 
 
 if __name__ == '__main__':
@@ -382,6 +422,6 @@ if __name__ == '__main__':
 		try:
 			run_loop_pass()
 		except Exception:
-			log.exception('Unhandled error in main loop; retrying in %ss', LOOP_DELAY * 5)
+			log.exception('Unhandled error in main loop; retrying in %ss', LOOP_INTERVAL)
 			session.rollback()
-			time.sleep(LOOP_DELAY * 5)
+			time.sleep(LOOP_INTERVAL)
