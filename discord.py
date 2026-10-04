@@ -1,4 +1,5 @@
 import sys, pickle
+import logging
 from typing import Optional
 
 from api.love2 import *
@@ -14,6 +15,22 @@ from functools import lru_cache
 from requests.exceptions import HTTPError
 
 API_ENDPOINT: str = 'https://discord.com/api/v10'
+
+# Loop pacing and Discord API limits.
+LOOP_DELAY = 2
+REQUEST_TIMEOUT = 30
+MANUAL_RATE_LIMIT = 30       # seconds between manual presence updates/resets
+PRESENCE_MIN_INTERVAL = 60   # seconds before re-issuing a presence update
+TOKEN_LIFETIME = 604800      # Discord OAuth2 access token lifetime (7 days)
+TOKEN_REFRESH_BUFFER = 1800  # refresh the token 30 minutes before expiry
+RESET_RETRY_COOLDOWN = 300   # cap reset attempts for users whose reset keeps failing
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# Tracks the last reset_presence attempt per user id so users whose resets keep
+# failing aren't hammered with requests on every single loop pass.
+_last_reset_attempts: dict = {}
 
 with open('./cache/databases.dat', 'rb') as file:
 	t = pickle.loads(file.read())
@@ -74,8 +91,8 @@ class APIClient:
 
 
 	def update_presence(self, user_data: UserData, network: NetworkType):
-		if time.time() - self.current_user.last_accessed <= 30:
-			print('[MANUAL RATE LIMITED]')
+		if time.time() - self.current_user.last_accessed <= MANUAL_RATE_LIMIT:
+			log.info('[MANUAL RATE LIMITED] %s', self.current_user.id)
 			return False
 
 		game = user_data.game
@@ -125,15 +142,15 @@ class APIClient:
 					activity_data[key_name] = activity_data[key_name][:128]
 
 		data = {'activities': [activity_data]}
-		if discord_user.rpc_session_token:
-			data['token'] = discord_user.rpc_session_token
+		if self.current_user.rpc_session_token:
+			data['token'] = self.current_user.rpc_session_token
 
 		headers = {
 			'Authorization': 'Bearer %s' % self.current_user.bearer_token,
 			'Content-Type': 'application/json',
 		}
 
-		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers)
+		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers, timeout=REQUEST_TIMEOUT)
 		r.raise_for_status()
 
 		response = r.json()
@@ -142,10 +159,10 @@ class APIClient:
 
 	def reset_presence(self):
 		if not self.current_user.rpc_session_token:
-			print('[NO SESSION TO RESET]')
+			log.info('[NO SESSION TO RESET] %s', self.current_user.id)
 			return False
-		if time.time() - self.current_user.last_accessed <= 30:
-			print('[MANUAL RATE LIMITED]')
+		if time.time() - self.current_user.last_accessed <= MANUAL_RATE_LIMIT:
+			log.info('[MANUAL RATE LIMITED] %s', self.current_user.id)
 			return False
 
 		headers = {
@@ -159,7 +176,7 @@ class APIClient:
 			'activities': [],
 			'token': self.current_user.rpc_session_token,
 		}
-		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers)
+		r = requests.post('%s/users/@me/headless-sessions' % API_ENDPOINT, data=json.dumps(data), headers=headers, timeout=REQUEST_TIMEOUT)
 
 		try:
 			r.raise_for_status()
@@ -175,7 +192,7 @@ class APIClient:
 		data = {
 			'token': self.current_user.rpc_session_token,
 		}
-		r = requests.post('%s/users/@me/headless-sessions/delete' % API_ENDPOINT, data=json.dumps(data), headers=headers)
+		r = requests.post('%s/users/@me/headless-sessions/delete' % API_ENDPOINT, data=json.dumps(data), headers=headers, timeout=REQUEST_TIMEOUT)
 
 		try:
 			r.raise_for_status()
@@ -189,7 +206,7 @@ class APIClient:
 
 
 	def refresh_bearer(self):
-		print('[REFRESH BEARER %s]' % self.current_user.id)
+		log.info('[REFRESH BEARER %s]', self.current_user.id)
 		current_refresh_token = self.current_user.refresh_token
 		data = {
 			'client_id': '%s' % CLIENT_ID,
@@ -200,33 +217,27 @@ class APIClient:
 		headers = {
 			'Content-Type': 'application/x-www-form-urlencoded',
 		}
-		json_response = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
+		json_response = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, timeout=REQUEST_TIMEOUT)
 		json_response.raise_for_status()
 		response = json_response.json()
 
-		session.execute(
-			update(DiscordTable)
-			.where(DiscordTable.refresh_token == current_refresh_token)
-			.values(
-				refresh_token=response['refresh_token'],
-				bearer_token=response['access_token'],
-				generation_date=time.time()
-			)
-		)
+		# Rotate the tokens on the ORM object itself; the flush on commit will
+		# persist them and keep the identity map in sync automatically.
+		self.current_user.refresh_token = response['refresh_token']
+		self.current_user.bearer_token = response['access_token']
+		self.current_user.generation_date = time.time()
 		session.commit()
 
 
 	def delete_discord_user(self):
 		user_id = self.current_user.id
-		print('[DELETING %s]' % user_id)
+		log.warning('[DELETING %s]', user_id)
 		session.execute(delete(DiscordTable).where(DiscordTable.id == user_id))
 		session.execute(delete(DiscordFriends).where(DiscordFriends.id == user_id))
 		session.commit()
 
 
-delay = 2
-
-while True:
+def run_loop_pass():
 	# End the previous loop's transaction and drop the session's identity map
 	# so the SELECTs below read freshly-committed rows (e.g. users/consoles added
 	# or toggled by the web frontend while this process was already running)
@@ -238,18 +249,27 @@ while True:
 	all_users = session.scalars(select(DiscordTable)).all()
 	for oauth_user in all_users:
 		# We only need to refresh 30 minutes before the token expires.
-		if time.time() - oauth_user.generation_date < 604800 - 1800:
+		if time.time() - oauth_user.generation_date < TOKEN_LIFETIME - TOKEN_REFRESH_BUFFER:
 			continue
 
-		# Any HTTP error expected here is a 403.
-		# This would mean that the refresh token is now invalid,
-		# likely due to the user removing access via Discord.
+		# A 400/401/403 here means the refresh token is now invalid,
+		# likely due to the user removing access via Discord,
+		# so we remove the account. Transient 5xx/429 responses are
+		# skipped and retried on the next loop instead.
 		api_client = APIClient(oauth_user)
 		try:
 			api_client.refresh_bearer()
-			time.sleep(delay * 2)
-		except HTTPError:
-			api_client.delete_discord_user()
+			time.sleep(LOOP_DELAY * 2)
+		except HTTPError as e:
+			# Only a 400/401/403 means the refresh token itself is invalid
+			# (e.g. the user revoked access), so only then should we delete the
+			# account. Transient 5xx or 429 responses should just skip and
+			# retry next loop instead of wiping the user's data.
+			if e.response.status_code in (400, 401, 403):
+				api_client.delete_discord_user()
+			else:
+				log.warning('[REFRESH FAILURE] %s', e)
+				time.sleep(LOOP_DELAY * 2)
 
 	# Inactive users have removed our bot: the backend removed them
 	# from both `friends` and `discord_friends`, but they still
@@ -265,19 +285,19 @@ while True:
 	inactive_users = session.scalars(inactive_query).all()
 
 	if len(inactive_users) > 0:
-		print('[INACTIVES] Handling %s' % len(inactive_users))
+		log.info('[INACTIVES] Handling %s', len(inactive_users))
 
 	for inactive_user in inactive_users:
 		api_client = APIClient(inactive_user)
 		try:
-			print('[INACTIVES] Resetting %s' % inactive_user.id)
+			log.info('[INACTIVES] Resetting %s', inactive_user.id)
 			api_client.reset_presence()
-			time.sleep(delay)
+			time.sleep(LOOP_DELAY)
 		except HTTPError as e:
-			print(f"[INACTIVE RESET FAILURE] {e}")
+			log.warning('[INACTIVE RESET FAILURE] %s', e)
 			# api_client.delete_discord_user()
 
-	time.sleep(delay)
+	time.sleep(LOOP_DELAY)
 
 	# Finally, we'll refresh presences for all remaining users.
 	# Fetch active Discord connections together with their account and friend
@@ -297,12 +317,12 @@ while True:
 	).all()
 
 	if len(discord_rows) < 1:
-		time.sleep(delay)
-		continue
+		time.sleep(LOOP_DELAY)
+		return
 
 	for discord_friend, discord_user, friend_data in discord_rows:
 		# If we've updated this user within the past minute, there's no need to update again.
-		if time.time() - discord_user.last_accessed < 60:
+		if time.time() - discord_user.last_accessed < PRESENCE_MIN_INTERVAL:
 			continue
 
 		api_client = APIClient(discord_user)
@@ -315,19 +335,19 @@ while True:
 
 			# Remove our presence for this now-offline user.
 			try:
-				print('[FRIENDS] Resetting presence for %s on %s' % (friend_data.friend_code, friend_data.network.lower_name()))
+				log.info('[FRIENDS] Resetting presence for %s on %s', friend_data.friend_code, friend_data.network.lower_name())
 				api_client.reset_presence()
-				time.sleep(delay)
+				time.sleep(LOOP_DELAY)
 			except HTTPError as e:
-				print(f"[FRIEND RESET FAILURE] {e}")
+				log.warning('[FRIEND RESET FAILURE] %s', e)
 				# api_client.delete_discord_user()
 			continue
 
-		print('[FRIENDS] Creating RPC for Discord ID %s - %s on %s]' % (discord_friend.id, discord_friend.friend_code, discord_friend.network.lower_name()))
+		log.info('[FRIENDS] Creating RPC for Discord ID %s - %s on %s]', discord_friend.id, discord_friend.friend_code, discord_friend.network.lower_name())
 		try:
 			principal_id = friend_code_to_principal_id(friend_data.friend_code)
 		except FriendCodeValidityError as e:
-			print(f'[FRIENDS] Skipping invalid friend code {friend_data.friend_code} on {friend_data.network.lower_name()}: {e}')
+			log.warning('[FRIENDS] Skipping invalid friend code %s on %s: %s', friend_data.friend_code, friend_data.network.lower_name(), e)
 			continue
 		mii = friend_data.mii
 		if mii:
@@ -347,11 +367,21 @@ while True:
 			)
 
 			api_client.update_presence(discord_user_data, discord_friend.network)
-			time.sleep(delay)
+			time.sleep(LOOP_DELAY)
 		except HTTPError as e:
-			print(f"[FRIEND PRESENCE FAILURE] {e}")
+			log.warning('[FRIEND PRESENCE FAILURE] %s', e)
 			# api_client.delete_discord_user()
-		time.sleep(delay)
+		time.sleep(LOOP_DELAY)
 
-	# Sleep for 5x our delay.
-	time.sleep(delay * 5)
+	# Sleep for 5x our loop delay.
+	time.sleep(LOOP_DELAY * 5)
+
+
+if __name__ == '__main__':
+	while True:
+		try:
+			run_loop_pass()
+		except Exception:
+			log.exception('Unhandled error in main loop; retrying in %ss', LOOP_DELAY * 5)
+			session.rollback()
+			time.sleep(LOOP_DELAY * 5)
