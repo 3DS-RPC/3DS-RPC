@@ -1083,29 +1083,34 @@ def deleter(friend_code: int):
         return 'failure!\nthat is not a real friendCode!'
     if not ',' in request.data.decode('utf-8'): # Old API compatiblity. In the future this should be depercated.
         token = request.data.decode('utf-8')
-        discord_id = user_from_token(token).id
-        
-        db.session.execute(
-            delete(DiscordFriends)
-            .where(DiscordFriends.friend_code == fc)
-            .where(DiscordFriends.network == NetworkType.NINTENDO)
-            .where(DiscordFriends.id == discord_id)
-        )
-        db.session.commit()
-
-        return 'success!'
-
-    data = request.data.decode('utf-8').split(',')
-    token = data[0]
-    network = name_to_network_type(data[1])
+        network = NetworkType.NINTENDO
+    else:
+        data = request.data.decode('utf-8').split(',')
+        token = data[0]
+        network = name_to_network_type(data[1])
     discord_id = user_from_token(token).id
 
+    # Only the console's owner may remove it, and only then do we stop tracking it.
+    owned = db.session.scalar(
+        select(DiscordFriends)
+        .where(DiscordFriends.id == discord_id)
+        .where(DiscordFriends.friend_code == fc)
+        .where(DiscordFriends.network == network)
+    )
+    if not owned:
+        return 'failure!\nyou don\'t own this console!'
+
     db.session.execute(
-            delete(DiscordFriends)
-            .where(DiscordFriends.friend_code == fc)
-            .where(DiscordFriends.network == network)
-            .where(DiscordFriends.id == discord_id)
-        )
+        delete(DiscordFriends)
+        .where(DiscordFriends.friend_code == fc)
+        .where(DiscordFriends.network == network)
+        .where(DiscordFriends.id == discord_id)
+    )
+    db.session.execute(
+        delete(Friend)
+        .where(Friend.friend_code == fc)
+        .where(Friend.network == network)
+    )
     db.session.commit()
     return 'success!'
 
