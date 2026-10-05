@@ -138,6 +138,17 @@ def handler_error(e):
     return handler500(e)
 
 
+@app.after_request
+def no_store_identity_responses(response):
+    """A cached /authorize redirect replays a single-use OAuth code, which breaks
+    login for anyone who hit the endpoint while that redirect was still cached.
+    """
+    if request.endpoint not in ('static', 'cdn_image', 'local_image_cdn'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+    return response
+
+
 disable_backend_warnings = False
 try:
     if sys.argv[1] == 'ignoreBackend' and local:
@@ -321,7 +332,7 @@ def fetch_bearer_token(code: str):
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
+    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -337,7 +348,7 @@ def refresh_bearer(token: str):
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers)
+    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, timeout=30)
     r.raise_for_status()
     token, user, pfp = create_discord_user('', r.json())
     return token, user, pfp
@@ -357,45 +368,86 @@ def user_from_token(token: str) -> Discord:
     return result
 
 
-def create_discord_user(code: str, response: dict = None):
-    if not response:
-        response = fetch_bearer_token(code)
-    headers = {
-        'Authorization': 'Bearer %s' % response['access_token'],
-    }
-    new = requests.get('%s/users/@me' % API_ENDPOINT, headers=headers)
+def clear_session_cookies(response):
+    response.set_cookie('token', '', expires=0)
+    response.set_cookie('user', '', expires=0)
+    response.set_cookie('pfp', '', expires=0)
+    return response
+
+
+def discord_reauth_redirect(reason: str):
+    """Send the user to the error page with the Reconnect button enabled."""
+    response = make_response(redirect('/error?reauth=1&reason=' + quote(reason)))
+    return clear_session_cookies(response)
+
+
+def fetch_discord_identity(access_token: str) -> dict:
+    """Raises UserError('reauth') if Discord rejects the token, so the caller can
+    send the user through a fresh authorization.
+    """
+    new = requests.get('%s/users/@me' % API_ENDPOINT, headers={
+        'Authorization': 'Bearer %s' % access_token,
+    }, timeout=30)
+    if new.status_code in (400, 401):
+        raise UserError('reauth')
     new.raise_for_status()
-    user = new.json()
-    token = secrets.token_hex(20)
-    try:
-        already_exist_check = db.session.scalar(
-            select(Discord)
-            .where(Discord.id == user['id'])
-        )
-        if already_exist_check:
-            raise Exception('UNIQUE constraint failed: discord.id')
+    return new.json()
+
+
+def store_discord_user(user: dict, tokens: dict, token: str) -> None:
+    def apply(discord_user: Discord) -> None:
+        discord_user.refresh_token = tokens['refresh_token']
+        discord_user.bearer_token = tokens['access_token']
+        discord_user.generation_date = time.time()
+        discord_user.site_session_token = token
+
+    discord_user = db.session.scalar(
+        select(Discord)
+        .where(Discord.id == user['id'])
+    )
+    if discord_user:
+        apply(discord_user)
+    else:
         db.session.add(Discord(
             id=user['id'],
-            refresh_token=response['refresh_token'],
-            bearer_token=response['access_token'],
+            refresh_token=tokens['refresh_token'],
+            bearer_token=tokens['access_token'],
             rpc_session_token=None,
             site_session_token=token,
             last_accessed=0,
             generation_date=time.time(),
             api_key=secrets.token_hex(16)
         ))
+    try:
         db.session.commit()
-    except Exception as e:
-        if 'UNIQUE constraint failed' in str(e):
-            old_token = token_from_id(user['id'])
+    except IntegrityError:
+        db.session.rollback()
+        discord_user = db.session.scalar(
+            select(Discord)
+            .where(Discord.id == user['id'])
+        )
+        if not discord_user:
+            raise
+        apply(discord_user)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
-            discord_user = user_from_token(old_token)
-            discord_user.refresh_token = response['refresh_token']
-            discord_user.bearer_token = response['access_token']
-            discord_user.generation_date = time.time()
-            discord_user.site_session_token = token
 
-            db.session.commit()
+def create_discord_user(code: str, response: dict = None):
+    if not response:
+        try:
+            response = fetch_bearer_token(code)
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code in (400, 401):
+                # The authorization code was cancelled, expired, or already used
+                # (e.g. a browser replaying a cached /authorize redirect).
+                raise UserError('reauth')
+            raise
+    user = fetch_discord_identity(response['access_token'])
+    token = secrets.token_hex(20)
+    store_discord_user(user, response, token)
 
     if user['avatar']:
         if user['avatar'].startswith('a_'):
@@ -662,24 +714,17 @@ def favicon():
 def settings():
     if not request.cookies.get('token'):
         return redirect('/connect')
-    data = {
-        'consoles': [],
-    }
     data = sidenav()
-    try:
-        stmt = (
-            select(Discord)
-            .where(Discord.site_session_token == request.cookies['token'])
-        )
-        result = db.session.scalar(stmt)
-    except Exception as e:
-        if 'invalid token' in str(e):
-            response = make_response(redirect('/'))
-            response.set_cookie('token', '', expires=0)
-            response.set_cookie('user', '', expires=0)
-            response.set_cookie('pfp', '', expires=0)
-            return response
-        return redirect('/')
+    result = db.session.scalar(
+        select(Discord)
+        .where(Discord.site_session_token == request.cookies['token'])
+    )
+    if not result:
+        # The stored token no longer maps to an account (it was rotated by a
+        # newer login, or the row was removed). Force a fresh Discord login
+        # instead of erroring out on a phantom session.
+        response = make_response(redirect('/connect'))
+        return clear_session_cookies(response)
 
     data['profileButton'] = result.show_profile_button
     data['smallImage'] = result.show_small_image
@@ -799,6 +844,7 @@ def error_page():
     data = sidenav()
     data['title'] = request.args.get('title') or 'Something went wrong'
     data['message'] = request.args.get('reason') or 'An unexpected error occurred. Please try again.'
+    data['reauth'] = request.args.get('reauth') == '1'
     return render_template('dist/error.html', data=data)
 
 
@@ -829,14 +875,10 @@ def consoles():
     }
     try:
         discord_id = user_from_token(request.cookies['token']).id
-    except Exception as e:
-        if 'invalid token' in str(e):
-            response = make_response(redirect('/'))
-            response.set_cookie('token', '', expires=0)
-            response.set_cookie('user', '', expires=0)
-            response.set_cookie('pfp', '', expires=0)
-            return response
-        return redirect('/')
+    except UserError:
+        # Stale session cookie; clear it and force a fresh Discord login.
+        response = make_response(redirect('/connect'))
+        return clear_session_cookies(response)
     for console, active, network_type in get_connected_consoles(discord_id):
         network = NetworkType(network_type)
         stmt = (
@@ -1253,7 +1295,7 @@ def settings_toggler(which: str):
 @app.route('/cdn/i/<string:file>/', methods=['GET'])
 @limiter.limit(cdn_limit)
 def cdn_image(file: str):
-    response = make_response(requests.get('https://kanzashi-ctr.cdn.nintendo.net/i/%s' % file, verify=False).content)
+    response = make_response(requests.get('https://kanzashi-ctr.cdn.nintendo.net/i/%s' % file, verify=False, timeout=30).content)
     response.headers['Content-Type'] = 'image/jpeg'
     return response
 
@@ -1294,6 +1336,14 @@ def authorize():
         return render_template('dist/404.html')
     try:
         token, user, pfp = create_discord_user(request.args['code'])
+    except UserError as e:
+        if str(e) == 'reauth':
+            # Stale/replayed/mismatched authorization (e.g. a browser replaying
+            # a cached redirect, or an already-used single-use code). Clear the
+            # dead session and let the user reconnect Discord.
+            return discord_reauth_redirect('Your Discord login could not be verified. Please reconnect Discord.')
+        app.logger.exception('Discord authorization failed')
+        return redirect('/error?reason=' + quote('We couldn\'t complete Discord authorization. Please try again.'))
     except Exception:
         app.logger.exception('Discord authorization failed')
         return redirect('/error?reason=' + quote('We couldn\'t complete Discord authorization. Please try again.'))

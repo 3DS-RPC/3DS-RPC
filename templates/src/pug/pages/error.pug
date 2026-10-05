@@ -27,6 +27,11 @@ block content
                             i.fas.fa-triangle-exclamation
                         h3.mb-2 {{ data['title'] }}
                         p.text-muted.mb-4 {{ data['message'] }}
-                        a.btn.btn-primary(href='/')
-                            i.fas.fa-arrow-left.me-1
+                        html {% if data['reauth'] %}
+                        a.btn.btn-primary.d-inline-flex.align-items-center.gap-2.me-2(style = 'background-color:#7289da;border-width:0px;' href='/connect')
+                            img(src = '{{ url_for("static",filename="assets/img/discord.svg") }}', height = '20px')
+                            | Reconnect Discord
+                        html {% endif %}
+                        a.btn.btn-secondary.d-inline-flex.align-items-center.gap-2(href='/')
+                            i.fas.fa-arrow-left
                             | Return to Home
