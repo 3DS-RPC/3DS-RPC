@@ -45,7 +45,7 @@ block content
             html {% for i in data['users'] %}
             a.col-sm-3.col-6.user-tile(href = '/user/{{ i["friendCode"] }}?network={{ i["network"] }}')
                 .card.app-card.app-lift
-                    .user-tile-media.mii-bg
+                    .user-tile-media.mii-bg(class = "mii-bg-{{ i['network'] }}")
                         html {% if i.get('game') %}
                         img.user-tile-game(src = '{{ i["game"]["icon_url"] }}')
                         html {% else %}
