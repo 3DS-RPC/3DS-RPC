@@ -54,6 +54,8 @@ class Friend(Base):
     game_description: Mapped[Optional[str]]
     last_online: Mapped[int] = mapped_column("last_online", BigInteger(), nullable=False)
     favorite_game: Mapped[int] = mapped_column("favorite_game", BigInteger(), nullable=False)
+    refresh_requested: Mapped[bool] = mapped_column("refresh_requested", nullable=False, default=False)
+    last_refresh: Mapped[int] = mapped_column("last_refresh", BigInteger(), nullable=False, default=0)
 
 
 class BackendMetrics(Base):

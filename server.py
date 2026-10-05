@@ -1115,6 +1115,43 @@ def deleter(friend_code: int):
     return 'success!'
 
 
+# Force-refresh a console's profile (name, Mii, etc).
+# This only sets a flag; the backend honors it the next time the user is
+# processed in the queue (and enforces the 1-hour cooldown there).
+@app.route('/api/refresh/<int:friend_code>/', methods=['POST'])
+@limiter.limit(toggler_limit)
+def refresher(friend_code: int):
+    try:
+        fc = validate_friend_code(friend_code)
+    except:
+        return 'failure!\nthat is not a real friendCode!'
+    data = request.data.decode('utf-8').split(',')
+    token = data[0]
+    network = name_to_network_type(data[1])
+    discord_id = user_from_token(token).id
+
+    owned = db.session.scalar(
+        select(DiscordFriends)
+        .where(DiscordFriends.id == discord_id)
+        .where(DiscordFriends.friend_code == fc)
+        .where(DiscordFriends.network == network)
+    )
+    if not owned:
+        return 'failure!\nyou don\'t own this console!'
+
+    friend = db.session.scalar(
+        select(Friend)
+        .where(Friend.friend_code == fc)
+        .where(Friend.network == network)
+    )
+    if not friend:
+        return 'failure!\nthat console is not currently tracked!'
+
+    friend.refresh_requested = True
+    db.session.commit()
+    return 'success!'
+
+
 # Regenerate the logged-in user's API key
 @app.route('/api/regenerate-key/', methods=['POST'])
 @limiter.limit(toggler_limit)
