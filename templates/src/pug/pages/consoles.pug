@@ -17,21 +17,36 @@ block content
                 background-color: #FC8C2C;
             }
             .icon img {
+                width: 50px;
                 filter: invert(51%) sepia(12%) saturate(0%) hue-rotate(181deg) brightness(89%) contrast(87%);
             }
             .icon.active img {
                 filter: invert(49%) sepia(44%) saturate(749%) hue-rotate(84deg) brightness(101%) contrast(79%);
             }
-            
+            .console-grid {
+                display: grid;
+                grid-template-columns: 1fr 3fr 1fr 1fr;
+                align-items: center;
+                width: 100%;
+            }
+            .console-grid > div {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                text-align: center;
+            }
+            .console-grid .console-title {
+                grid-column: 2;
+            }
+
         script.
             function clicked(active, fc, network) {
                 active = active == 'False';
                 var xmlHttp = new XMLHttpRequest();
                 xmlHttp.open( "POST", "/api/toggle/" + fc, false );
                 xmlHttp.send( [token, +active, network] );
-                if (xmlHttp.responseText != 'success!') {
-                } else {
-                  location.reload();
+                if (xmlHttp.responseText == 'success!') {
+                    location.reload();
                 }
             }
             function deleteCode(fc, network) {
@@ -42,30 +57,52 @@ block content
                     location.reload();
                 }
             }
+            function refreshCode(fc, network) {
+                var xmlHttp = new XMLHttpRequest();
+                xmlHttp.open( "POST", "/api/refresh/" + fc, false );
+                xmlHttp.send([token, network]);
+                alert(xmlHttp.responseText);
+            }
 
-        .card.text-center.shadow-lg.border-0.rounded-lg.mainCard(style = 'margin-bottom: 25px;')
-            .card-header.d-flex.justify-content-around
-                b Enable
-                b Consoles
-                b Delete
+        .card.shadow-lg.border-0.rounded-lg.mainCard(style = 'margin-bottom: 25px;')
+            .card-header
+                .console-grid.px-3.py-1
+                    div
+                        b Enable
+                    div
+                        b Consoles
+                    div
+                        b Refresh
+                    div
+                        b Delete
             .card-body
                 html {% for console in data['consoles'] %}
-                .card.text-center.g-0.shadow-lg.border-0.rounded-lg.subsequentCard(style = 'margin-bottom: 25px;')
+                .card.g-0.shadow-lg.border-0.rounded-lg.subsequentCard(style = 'margin-bottom: 25px;')
                     .card-header
-                        b Console {{ loop.index0 + 1 }} ({{ console['fc'] }} on {{ console['network'].capitalize() }})
+                        .console-grid
+                            .console-title
+                                b Console {{ loop.index0 + 1 }} ({{ console['fc'] }} on {{ console['network'].capitalize() }})
                     .card-body.m-0.p-0
-                        .row.g-0.m-0.p-3
-                            .col-2.my-auto
+                        .console-grid.p-3
+                            div
                                 a(class = "icon {{ 'active' if console['active'] }}" href = "javascript:clicked('{{ console['active'] }}', {{ console['fc'].replace('-', '') }}, '{{ console['network'] }}')")
                                     html {% if not console['active'] %}
-                                    img(src = '{{ url_for("static",filename="assets/img/star.svg") }}' width = '50vmax')
+                                    img(src = '{{ url_for("static",filename="assets/img/star.svg") }}')
                                     html {% else %}
-                                    img(src = '{{ url_for("static",filename="assets/img/star-fill.svg") }}' width = '50vmax')
+                                    img(src = '{{ url_for("static",filename="assets/img/star-fill.svg") }}')
                                     html {% endif %}
-                            .col-8.my-auto
+                            div
                                 a(href = "/user/{{ console['fc'].replace('-', '') }}?network={{ console['network'] }}" style = 'text-decoration: none;')
                                     b {{ console['username'] }}
-                            .col-2.my-auto
+                            div
+                                html {% if console['tracked'] %}
+                                a(href = "javascript:refreshCode({{ console['fc'].replace('-', '') }}, '{{ console['network']}}');" style = 'text-decoration: none;')
+                                    b Refresh
+                                html {% else %}
+                                span.text-muted(style = 'cursor: not-allowed;')
+                                    b Refresh
+                                html {% endif %}
+                            div
                                 a(href = "javascript:deleteCode({{ console['fc'].replace('-', '') }}, '{{ console['network']}}');" style = 'text-decoration: none;')
                                     b Delete
                 html {% endfor %}

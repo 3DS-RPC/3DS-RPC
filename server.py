@@ -822,7 +822,8 @@ def consoles():
             'fc': '-'.join(console[i:i+4] for i in range(0, 12, 4)),
             'username': username,
             'active': active,
-            'network': network.lower_name()
+            'network': network.lower_name(),
+            'tracked': result is not None
         })
     data.update(sidenav())
     response = render_template('dist/consoles.html', data=data)

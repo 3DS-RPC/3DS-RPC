@@ -9,18 +9,48 @@ block content
     .container-fluid.px-4
         include includes/page-header.pug
 
+        style.
+            .user-tile {
+                text-decoration: none;
+                color: inherit;
+            }
+            .user-tile .card {
+                height: 100%;
+            }
+            .user-tile-media {
+                display: flex;
+                align-items: flex-end;
+                justify-content: space-between;
+                min-height: 120px;
+                padding: .75rem;
+            }
+            .user-tile-game {
+                height: 48px;
+                align-self: flex-end;
+            }
+            .user-tile-mii {
+                height: 100px;
+            }
+            .user-tile-name {
+                padding: .6rem .5rem;
+                text-align: center;
+                background: #fff;
+                font-weight: 600;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
         .row.gy-3
             html {% for i in data['users'] %}
-            a.col-sm-3.col-6(href = '/user/{{ i["friendCode"] }}?network={{ i["network" ]}}' style = 'text-decoration: none; color: inherit;')
-                .card.p-1
-                    .card-body.p-0(style = 'background: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0.1) 100%);')
-                        .col-12.d-flex.align-items-end.justify-content-between.p-0.m-0(style = 'height: 70%;')
-                            html {% if i.get('game') %}
-                            img(src = '{{ i["game"]["icon_url"] }}' height = '50vh' style = 'margin-bottom: 10%; margin-left: 10%;')
-                            html {% else %}
-                            img(src = '' height = '50vh' style = 'margin-bottom: 10%; margin-left: 10%;')
-                            html {% endif %}
-                            img(src = '{{ i["mii"]["face"] }}' height = '100vh')
-                        .col-12.rounded-9.text-center.p-0.m-0(style = 'height: 30%; background-color: #FFF')
-                            | {{ i['username'] }}
+            a.col-sm-3.col-6.user-tile(href = '/user/{{ i["friendCode"] }}?network={{ i["network"] }}')
+                .card.app-card.app-lift
+                    .user-tile-media.mii-bg
+                        html {% if i.get('game') %}
+                        img.user-tile-game(src = '{{ i["game"]["icon_url"] }}')
+                        html {% else %}
+                        span.user-tile-game
+                        html {% endif %}
+                        img.user-tile-mii(src = '{{ i["mii"]["face"] }}')
+                    .user-tile-name {{ i['username'] }}
             html {% endfor %}

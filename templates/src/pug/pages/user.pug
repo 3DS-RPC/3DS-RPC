@@ -60,64 +60,65 @@ block content
                 f[i].id = 'ID' + i.toString();
             }
 
-        .row
-            .col-sm-2.d-flex.align-items-end
-                img(src = "{{ data['User']['mii']['face'] }}", width = '100%', style = 'background: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0.1) 100%);')
-            .col-md-5
-                .row(style = 'padding-top: 2rem;')
-                    .card.text-center
+        style.
+            .profile-mii {
+                width: 100%;
+                max-width: 220px;
+                border-radius: .75rem;
+            }
+            .game-row img {
+                height: 64px;
+            }
+            .fav-game img {
+                height: 112px;
+            }
+
+        .row.mb-4
+            .col-sm-4.col-md-3.d-flex.align-items-end.justify-content-center
+                img.profile-mii.mii-bg(src = "{{ data['User']['mii']['face'] }}")
+            .col-md-9
+                .card.app-card.h-100
+                    html {% if data['User']['Presence']['game'] %}
+                    .card-header Currently Playing
+                    html {% endif %}
+                    a.card-body.d-flex.align-items-center.text-black.game-row(style = 'text-decoration: none;', data-bs-toggle="modal", href = '#ID0')
                         html {% if data['User']['Presence']['game'] %}
-                        .card-header(style = 'background-color: inherit;')
-                            b CURRENTLY PLAYING
+                        img(src = "{{ data['User']['Presence']['game']['icon_url'] }}")
+                        span(style = 'padding-left: 1rem;') {{ data['User']['Presence']['game']['name'] }}
+                        html {% else %}
+                        .text-muted.text-center.w-100 Offline
                         html {% endif %}
-                        a.card-body.d-flex.align-items-center.text-black(style = 'text-decoration: none;', data-bs-toggle="modal", href = '#ID0')
-                            html {% if data['User']['Presence']['game'] %}
-                            .col-md-2
-                                img(src = "{{ data['User']['Presence']['game']['icon_url'] }}", width = '100%')
-                            p(style = 'padding-left: 1rem;') {{ data['User']['Presence']['game']['name'] }}
-                            html {% else %}
-                            .text-muted.text-center Offline
-                            html {% endif %}
-                        html {% if data['User']['Presence']['gameDescription'] %}
-                        .card-footer.d-flex.align-items-center(style = 'background-color: inherit;')
-                            .text-muted
-                                html.
-                                  {% for i in data['User']['Presence']['gameDescription'].split('\n') %}
-                                  {{ i }}
-                                  <br>
-                                  {% endfor %}
-                        html {% endif %}
-        .row
+                    html {% if data['User']['Presence']['gameDescription'] %}
+                    .card-footer.text-muted.small
+                        html.
+                          {% for i in data['User']['Presence']['gameDescription'].split('\n') %}
+                          {{ i }}
+                          <br>
+                          {% endfor %}
+                    html {% endif %}
+        .row.mb-4
             html {% if data['User']['message'] %}
-            .col-xl-2(style = 'padding-top: 2rem')
-                .card
-                    .card-header
-                        b STATUS
-                    .card-body
-                        | {{ data['User']['message'] }}
+            .col-sm-6.col-xl-4.mb-3.mb-xl-0
+                .card.app-card.h-100
+                    .card-header Status
+                    .card-body {{ data['User']['message'] }}
             html {% endif %}
-            .col-xl-2(style = 'padding-top: 2rem')
-                .card
-                    .card-header
-                        b MEMBER SINCE
-                    .card-body
-                        | {{ data['User']['accountCreation'] }}
-            .col-xl-2(style = 'padding-top: 2rem')
-                .card
-                    .card-header
-                        b LAST ONLINE
-                    .card-body
-                        | {{ data['User']['lastOnline'] }}
-        .row(style = 'padding-top: 2rem; padding-bottom: 2rem;')
-            .col-xl-6
-                .card
-                    .card-header
-                        b FAVORITE GAME
-                    a.card-body.d-flex.align-items-center.text-black(style = 'text-decoration: none;', data-bs-toggle="modal", href = '#ID1')
+            .col-sm-6.col-xl-4.mb-3.mb-xl-0
+                .card.app-card.h-100
+                    .card-header Member Since
+                    .card-body {{ data['User']['accountCreation'] }}
+            .col-sm-6.col-xl-4
+                .card.app-card.h-100
+                    .card-header Last Online
+                    .card-body {{ data['User']['lastOnline'] }}
+        .row
+            .col-12
+                .card.app-card
+                    .card-header Favorite Game
+                    a.card-body.d-flex.align-items-center.text-black.game-row.fav-game(style = 'text-decoration: none;', data-bs-toggle="modal", href = '#ID1')
                       html {% if data['User']['favoriteGame'] %}
-                      .col-md-2
-                          img(src = "{{ data['User']['favoriteGame']['icon_url'] }}", width = '100%')
-                      p(style = 'padding-left: 1rem;') {{ data['User']['favoriteGame']['name'] }}
+                      img(src = "{{ data['User']['favoriteGame']['icon_url'] }}")
+                      span(style = 'padding-left: 1rem;') {{ data['User']['favoriteGame']['name'] }}
                       html {% else %}
-                      .text-muted.text-center None
+                      .text-muted.text-center.w-100 None
                       html {% endif %}
