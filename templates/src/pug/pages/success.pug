@@ -28,6 +28,9 @@ block content
             var xmlHttp = new XMLHttpRequest();
             xmlHttp.open( "POST", "/api/toggle/" + fc, false );
             xmlHttp.send( [token, 1, network] );
+            if (xmlHttp.responseText !== 'success!') {
+                redirectOnFailure(xmlHttp.responseText);
+            }
         }
         onload = (event) => {
           if (document.cookie.includes('token')) {

@@ -5,22 +5,29 @@
 console.log('%cIf you\'re looking at this text, I think you\'re pretty cool!', 'color: #42f578');
 
 function getCookie(cname) {
-  let name = cname + '=';
+  let name = cname + '=';
   let ca = document.cookie.split(';');
-  for(let i = 0; i < ca.length; i++) {
+  for (let i = 0; i < ca.length; i++) {
     let c = ca[i];
     while (c.charAt(0) == ' ') {
-      c = c.substring(1);
-    }
-    if (c.indexOf(name) == 0) {
+      c = c.substring(1);
+    }
+    if (c.indexOf(name) == 0) {
       return c.substring(name.length, c.length);
-    }
-  }
+    }
+  }
   return '';
 }
+
 function eraseCookie(name) {
-    document.cookie = name +'=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+  document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
 }
+
+function redirectOnFailure(responseText) {
+  var reason = responseText.replace(/^failure!\s*/, '').split('\n').join(' ');
+  window.location.href = '/error?reason=' + encodeURIComponent(reason);
+}
+
 function deleteLogin() {
     eraseCookie('token');
     eraseCookie('user');

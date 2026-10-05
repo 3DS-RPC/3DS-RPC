@@ -1,0 +1,32 @@
+extends ../layouts/dashboard.pug
+
+block config
+    - var bodyClass = 'sb-nav-fixed'
+    - var pageTitle = "Error"
+    - var sidenavStyle = 'sb-sidenav-dark'
+
+block content
+    .container-fluid.px-4
+        style.
+            .error-icon {
+                width: 72px;
+                height: 72px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.75rem;
+                color: #fff;
+                background-color: #FC8C2C;
+            }
+        .row.justify-content-center
+            .col-lg-6
+                .card.app-card.shadow-lg.border-0.text-center.mt-5
+                    .card-body.p-5
+                        .error-icon.mx-auto.mb-3
+                            i.fas.fa-triangle-exclamation
+                        h3.mb-2 {{ data['title'] }}
+                        p.text-muted.mb-4 {{ data['message'] }}
+                        a.btn.btn-primary(href='/')
+                            i.fas.fa-arrow-left.me-1
+                            | Return to Home

@@ -15,8 +15,7 @@ block content
                 xmlHttp.open( "POST", "/api/settings/" + element.id, false );
                 xmlHttp.send( [+element.checked] );
                 if (xmlHttp.responseText != 'success!') {
-                  alert('This request failed. Perhaps you\'ve hit a ratelimit?');
-                  location.reload();
+                    redirectOnFailure(xmlHttp.responseText);
                 }
             }
             function copyKey() {
@@ -30,8 +29,10 @@ block content
                 var xmlHttp = new XMLHttpRequest();
                 xmlHttp.open( "POST", "/api/regenerate-key/", false );
                 xmlHttp.send();
-                if (xmlHttp.responseText.length > 0) {
+                if (xmlHttp.responseText == 'success!') {
                     location.reload();
+                } else {
+                    redirectOnFailure(xmlHttp.responseText);
                 }
             }
 
