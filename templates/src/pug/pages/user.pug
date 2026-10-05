@@ -75,7 +75,7 @@ block content
 
         .row.mb-4
             .col-sm-4.col-md-3.d-flex.align-items-end.justify-content-center
-                img.profile-mii.mii-bg(src = "{{ data['User']['mii']['face'] }}")
+                img.profile-mii.mii-bg(src = "{{ data['User']['mii']['face'] }}", class = "mii-bg-{{ data['User']['network'] }}")
             .col-md-9
                 .card.app-card.h-100
                     html {% if data['User']['Presence']['game'] %}

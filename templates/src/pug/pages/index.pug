@@ -18,7 +18,7 @@ mixin userList(listKey, gameCondition)
                 .d-flex.flex-row.flex-wrap.align-items-center.justify-content-center.gap-3
                     .d-flex.flex-column.align-items-center.user-col
                         span.app-label User
-                        img.user-mii.mii-bg(src = "{{ i['mii']['face'] }}")
+                        img.user-mii.mii-bg(src = "{{ i['mii']['face'] }}", class = "mii-bg-{{ i['network'] }}")
                         span.user-name {{ i['username'] }}
                     html {% if !{gameCondition} %}
                     .d-flex.flex-column.align-items-center.text-center.text-break.user-col

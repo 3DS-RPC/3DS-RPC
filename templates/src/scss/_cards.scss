@@ -1,6 +1,10 @@
 $card-accent: #fc8c2c;
 $card-muted: #8a8a8a;
 $mii-gradient: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0.1) 100%);
+$mii-gradients: (
+    nintendo: $mii-gradient,
+    pretendo: linear-gradient(0deg, rgb(196, 160, 250) 0%, rgb(238, 231, 255, 0.1) 100%),
+);
 
 .app-card {
     border: 1px solid rgba(0, 0, 0, .08);
@@ -43,4 +47,10 @@ $mii-gradient: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0
 // Mii portrait gradient backdrop
 .mii-bg {
     background: $mii-gradient;
+}
+
+@each $network, $gradient in $mii-gradients {
+    .mii-bg-#{$network} {
+        background: $gradient;
+    }
 }
