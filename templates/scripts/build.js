@@ -1,4 +1,5 @@
 import autoprefixer from "autoprefixer";
+import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import postcss from "postcss";
@@ -60,6 +61,18 @@ await fs.mkdir(staticCssDir, { recursive: true });
 const staticStylePath = path.resolve(staticCssDir, "./styles.css");
 await fs.writeFile(staticStylePath, processedStyle.css, "utf8");
 
+// Cache-busting: a content hash per asset so each URL changes only when that
+// file changes.
+const assetVersions = {};
+for (const asset of ["css/styles.css", "js/scripts.js"]) {
+    const contents = await fs.readFile(path.resolve(staticPath, asset));
+    assetVersions[asset] = crypto.createHash("sha1").update(contents).digest("hex").slice(0, 10);
+    console.log(`### INFO: Asset version: ${asset} -> ${assetVersions[asset]}`);
+}
+
+const assetUrl = (file) =>
+    `{{ url_for('static', filename='${file}') }}?v=${assetVersions[file]}`;
+
 ////////////////////
 // HTML Templates //
 ////////////////////
@@ -87,6 +100,7 @@ for (const sourceTemplatePath of sourceTemplates) {
         doctype: "html",
         filename: templateName,
         basedir: sourceTemplateDir,
+        assetUrl,
     });
 
     // Next, beautify its source.
