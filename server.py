@@ -1045,6 +1045,14 @@ def toggler(friend_code: int):
     result = db.session.scalar(stmt)
 
     if not result:
+        # A console may only be linked to a single account.
+        owner = db.session.scalar(
+            select(DiscordFriends)
+            .where(DiscordFriends.friend_code == fc)
+            .where(DiscordFriends.id != discord_id)
+        )
+        if owner:
+            return 'failure!\nthat console is already linked to another account!'
         stmt = select(DiscordFriends).where(DiscordFriends.id == discord_id)
         allFriends = db.session.scalars(stmt).all()
         if len(allFriends) >= 10:
