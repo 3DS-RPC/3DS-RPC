@@ -5,7 +5,7 @@ from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.middleware.proxy_fix import ProxyFix
-import sys, datetime, xmltodict, pickle, secrets
+import sys, datetime, xmltodict, pickle, secrets, os
 from urllib.parse import urlencode, quote
 
 from sqlalchemy import select, update, insert, delete
@@ -17,6 +17,17 @@ from api.public import PRETENDO_BOT_FC, NINTENDO_BOT_FC
 from api.networks import NetworkType, name_to_network_type
 from api.metrics import init_db
 from database import *
+
+
+class UserError(Exception):
+    """An error whose message is safe to return to the caller.
+
+    Anything that is not a UserError is logged (forwarded to Discord) and
+    replaced with a generic message so internals never leak.
+    """
+
+    pass  # Marker exception: intentionally does nothing here.
+
 
 app = Flask(__name__)
 
@@ -109,7 +120,13 @@ setup_error_webhook(app.logger)
 def handler500(e):
     app.logger.exception('Unhandled 500 error', exc_info=e)
     status = getattr(e, 'code', 500) or 500
-    return f'<h1>{status} Internal Server Error</h1><p>Something went wrong.</p>', status
+    try:
+        data = sidenav()
+        data['title'] = 'Something went wrong'
+        data['message'] = 'An unexpected server error occurred. Please try again later.'
+        return render_template('dist/error.html', data=data), status
+    except Exception:
+        return f'<h1>{status} Internal Server Error</h1><p>Something went wrong.</p>', status
 
 
 @app.errorhandler(Exception)
@@ -245,15 +262,15 @@ def validate_friend_code(friend_code) -> str:
 def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
     # Make sure the user isn't trying to create any registered bot friend code.
     if int(friend_code) == int(PRETENDO_BOT_FC):
-        raise Exception('invalid FC')
+        raise UserError('invalid FC')
     if int(friend_code) == int(NINTENDO_BOT_FC):
-        raise Exception('invalid FC')
+        raise UserError('invalid FC')
 
     # Reject friend codes that fail the 3DS checksum so bad rows never enter the DB.
     try:
         validate_friend_code(friend_code)
     except FriendCodeValidityError:
-        raise Exception(f'invalid FC: {str(friend_code).zfill(12)}')
+        raise UserError(f'invalid FC: {str(friend_code).zfill(12)}')
 
     friend_code = str(friend_code).zfill(12)
 
@@ -336,7 +353,7 @@ def user_from_token(token: str) -> Discord:
     stmt = select(Discord).where(Discord.site_session_token == token)
     result = db.session.scalar(stmt)
     if not result:
-        raise Exception('invalid token!')
+        raise UserError('invalid token!')
     return result
 
 
@@ -470,13 +487,13 @@ def sidenav():
 def user_agent_check():
     user_agent = request.headers['User-Agent']
     if not user_agent.startswith(agent):
-        raise Exception('this client is invalid')
+        raise UserError('this client is invalid')
     try:
         client_version = tuple(int(x) for x in user_agent[len(agent):].split('.'))
     except:
-        raise Exception('this client is invalid')
+        raise UserError('this client is invalid')
     if client_version < version:
-        raise Exception('this client is outdated! please update to v%s' % '.'.join(map(str, version)))
+        raise UserError('this client is outdated! please update to v%s' % '.'.join(map(str, version)))
 
 
 def console_api_key() -> str:
@@ -512,7 +529,7 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
 
             # Require a valid console API key for API access.
             if not verify_console_key(friend_code, network, console_api_key()):
-                raise Exception('invalid console API key')
+                raise UserError('invalid console API key')
 
             # Create a user for this friend code, or update its last access date.
             # TODO(spotlightishere): This should be restructured!
@@ -520,7 +537,7 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
 
         network_start_time = db.session.get(Config, network).backend_uptime
         if is_api and network_start_time is None and not disable_backend_warnings:
-            raise Exception('Backend currently offline. please try again later')
+            raise UserError('Backend currently offline. please try again later')
 
         friend_code = str(friend_code).zfill(12)
         principal_id = friend_code_to_principal_id(friend_code)
@@ -532,7 +549,7 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
         result = db.session.scalar(stmt)
 
         if not result:
-            raise Exception('Friend code not recognized!\nHint: You may not have added the bot as a friend')
+            raise UserError('Friend code not recognized!\nHint: You may not have added the bot as a friend')
         if result.online:
             presence = {
                 'titleID': result.title_id,
@@ -563,10 +580,17 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
                 'favoriteGame': result.favorite_game,
             }
         }
-    except Exception as e:
+    except (UserError, FriendCodeValidityError) as e:
         return {
             'Exception': {
                 'Error': str(e),
+            }
+        }
+    except Exception:
+        app.logger.exception('get_presence failed for %s', friend_code)
+        return {
+            'Exception': {
+                'Error': 'an unexpected error occurred',
             }
         }
 
@@ -769,10 +793,19 @@ def discord_connect():
     return redirect('/connect')
 
 
-# Failure page
+# Error page
+@app.route('/error')
+def error_page():
+    data = sidenav()
+    data['title'] = request.args.get('title') or 'Something went wrong'
+    data['message'] = request.args.get('reason') or 'An unexpected error occurred. Please try again.'
+    return render_template('dist/error.html', data=data)
+
+
+# Legacy failure page
 @app.route('/failure.html')
 def failure():
-    return render_template('dist/failure.html')
+    return redirect('/error')
 
 
 # Success page
@@ -843,7 +876,7 @@ def user_page(friend_code: str):
         create_user(friend_code_int, network, True)
         user_data = get_presence(friend_code_int, network, False)
         if user_data['Exception']:
-            raise Exception(user_data['Exception'])
+            return render_template('dist/404.html')
         if not user_data['User']['username']:
             user_data['User']['username'] = 'Awaiting first sync'
     except:
@@ -903,16 +936,23 @@ def new_user(friend_code: int, network: int = -1, user_check: bool = True):
 
             # Require a valid console API key for API access.
             if not verify_console_key(friend_code, network, console_api_key()):
-                raise Exception('invalid console API key')
+                raise UserError('invalid console API key')
 
         create_user(friend_code, network, True)
         return {
             'Exception': False,
         }
-    except Exception as e:
+    except (UserError, FriendCodeValidityError) as e:
         return {
             'Exception': {
                 'Error': str(e),
+            }
+        }
+    except Exception:
+        app.logger.exception('new_user failed for %s', friend_code)
+        return {
+            'Exception': {
+                'Error': 'an unexpected error occurred',
             }
         }
 
@@ -1165,16 +1205,22 @@ def refresher(friend_code: int):
 @app.route('/api/regenerate-key/', methods=['POST'])
 @limiter.limit(toggler_limit)
 def regenerate_key():
-    discord_user = user_from_token(request.cookies['token'])
+    try:
+        discord_user = user_from_token(request.cookies['token'])
+    except Exception:
+        return 'failure!\nyour session is invalid!'
     new_key = secrets.token_hex(16)
 
-    db.session.execute(
-        update(Discord)
-        .where(Discord.id == discord_user.id)
-        .values(api_key=new_key)
-    )
-    db.session.commit()
-    return new_key
+    try:
+        db.session.execute(
+            update(Discord)
+            .where(Discord.id == discord_user.id)
+            .values(api_key=new_key)
+        )
+        db.session.commit()
+    except Exception:
+        return 'failure!\nwe couldn\'t regenerate your key!'
+    return 'success!'
 
 
 # Toggle one
@@ -1183,7 +1229,7 @@ def regenerate_key():
 def settings_toggler(which: str):
     toggle = bool(int(request.data.decode('utf-8')))
     if not which in ('smallImage', 'profileButton', 'rpcEnabled'):
-        return 'failure!'
+        return 'failure!\nthat is not a valid setting!'
     if which == 'smallImage':
         which = 'show_small_image'
     elif which == 'profileButton':
@@ -1199,7 +1245,7 @@ def settings_toggler(which: str):
 
         db.session.commit() 
     except:
-        return 'failure!'
+        return 'failure!\nwe couldn\'t update that setting!'
     return 'success!'
 
 
@@ -1231,8 +1277,10 @@ def login():
         else:
             network = NetworkType(int(request.form['network']))
         new_user(fc, network, False)
-    except:
-        return redirect('/failure.html')
+    except FriendCodeValidityError:
+        return redirect('/error?reason=' + quote('That friend code is not valid.'))
+    except Exception:
+        return redirect('/error?reason=' + quote('We couldn\'t register that friend code.'))
     return redirect(f'/success.html?fc={fc}&network={network.lower_name()}')
 
 
@@ -1240,9 +1288,15 @@ def login():
 @app.route('/authorize')
 @limiter.limit(new_user_limit)
 def authorize():
+    if request.args.get('error'):
+        return redirect('/error?reason=' + quote('Discord authorization was cancelled or denied.'))
     if not request.args.get('code'):
         return render_template('dist/404.html')
-    token, user, pfp = create_discord_user(request.args['code'])
+    try:
+        token, user, pfp = create_discord_user(request.args['code'])
+    except Exception:
+        app.logger.exception('Discord authorization failed')
+        return redirect('/error?reason=' + quote('We couldn\'t complete Discord authorization. Please try again.'))
     response = make_response(redirect('/consoles'))
     response.set_cookie('token', token, expires=datetime.datetime.now() + datetime.timedelta(days=30))
     response.set_cookie('user', user, expires=datetime.datetime.now() + datetime.timedelta(days=30))

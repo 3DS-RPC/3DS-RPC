@@ -47,6 +47,8 @@ block content
                 xmlHttp.send( [token, +active, network] );
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
+                } else {
+                    redirectOnFailure(xmlHttp.responseText);
                 }
             }
             function deleteCode(fc, network) {
@@ -55,13 +57,19 @@ block content
                 xmlHttp.send([token, network]);
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
+                } else {
+                    redirectOnFailure(xmlHttp.responseText);
                 }
             }
             function refreshCode(fc, network) {
                 var xmlHttp = new XMLHttpRequest();
                 xmlHttp.open( "POST", "/api/refresh/" + fc, false );
                 xmlHttp.send([token, network]);
-                alert(xmlHttp.responseText);
+                if (xmlHttp.responseText == 'success!') {
+                    location.reload();
+                } else {
+                    alert(xmlHttp.responseText.replace(/^failure!\s*/, ''));
+                }
             }
 
         .card.shadow-lg.border-0.rounded-lg.mainCard(style = 'margin-bottom: 25px;')
