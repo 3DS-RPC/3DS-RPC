@@ -144,6 +144,8 @@ class QueriedFriend:
 		self.online = given_friend.online
 		self.last_online = given_friend.last_online
 		self.username = given_friend.username
+		self.refresh_requested = given_friend.refresh_requested
+		self.last_refresh = given_friend.last_refresh
 
 
 async def main():
@@ -619,7 +621,12 @@ async def update_profiles(friends_client: friends.FriendsClientV1, session: Sess
 	pending_updates: List[dict] = []
 	for current_friend in added_friends:
 		work: bool = False
-		if time.time() - current_friend.last_accessed >= 600 or scrape_only or current_friend.username is None:
+		# A refresh request is a flag that is honored when this user is next
+		# processed in the queue. The 1-hour cooldown is enforced here (not at
+		# request time) so repeated clicks just keep the flag set until a
+		# refresh is actually due.
+		refresh_eligible = current_friend.refresh_requested and time.time() - current_friend.last_refresh >= 3600
+		if refresh_eligible or time.time() - current_friend.last_accessed >= 600 or scrape_only or current_friend.username is None:
 			work = True
 
 		if not work:
@@ -666,22 +673,29 @@ async def update_profiles(friends_client: friends.FriendsClientV1, session: Sess
 			'username': username,
 			'message': comment,
 			'mii': face,
-			'favorite_game': favorite_game
+			'favorite_game': favorite_game,
+			'refresh_eligible': refresh_eligible
 		})
 
 	# Batch commit all updates
 	for upd in pending_updates:
+		values = {
+			'username': upd['username'],
+			'message': upd['message'],
+			'mii': upd['mii'],
+			'favorite_game': upd['favorite_game'],
+			'last_accessed': time.time(),
+		}
+		# Only a flag-triggered refresh consumes the request (and restarts the
+		# cooldown). Normal throttle-based scrapes leave it pending.
+		if upd['refresh_eligible']:
+			values['refresh_requested'] = False
+			values['last_refresh'] = time.time()
 		session.execute(
 			update(Friend)
 			.where(Friend.friend_code == upd['friend_code'])
 			.where(Friend.network == network)
-			.values(
-				username=upd['username'],
-				message=upd['message'],
-				mii=upd['mii'],
-				favorite_game=upd['favorite_game'],
-				last_accessed=time.time()
-			)
+			.values(**values)
 		)
 	session.commit()
 
