@@ -14,22 +14,9 @@ else
         li.breadcrumb-item
             a(href='/') Home
         li.breadcrumb-item.active #{pageTitle}
-        span &nbsp;
-        if fc
-            a(href = 'javascript:addConsole()')#addToConsoles
 
 script.
     let x = document.getElementById('splitTHIS');
     if (x){
-      var fc = x.textContent;
-      if (document.cookie.includes('token')) {
-          document.getElementById('addToConsoles').innerHTML = '(Add to consoles)';
-      }
-      function addConsole() {
-          var xmlHttp = new XMLHttpRequest();
-          xmlHttp.open( "POST", "/api/toggle/" + fc, false );
-          xmlHttp.send( [token, 1, '#{network}'] );
-          window.location.href = "/consoles";
-      }
       x.textContent = '(' + (x.textContent.match(/.{1,4}/g) ?? []).join('-') + ' on ' + '#{network}'.charAt(0).toUpperCase() + '#{network}'.slice(1) + ')';
     }

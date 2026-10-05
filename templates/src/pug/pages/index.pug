@@ -10,11 +10,65 @@ prepend css
     //- Load Simple DataTables Stylesheet
     link(href='https://cdn.jsdelivr.net/npm/simple-datatables@latest/dist/style.css', rel='stylesheet')
 
+mixin userList(listKey, gameCondition)
+    .card-body.user-list
+        html {% for i in data['!{listKey}'] %}
+        a.card.app-card.app-lift.user-card(href = "/user/{{ i['friendCode'] }}?network={{ i['network'] }}")
+            .card-body
+                .d-flex.flex-row.flex-wrap.align-items-center.justify-content-center.gap-3
+                    .d-flex.flex-column.align-items-center.user-col
+                        span.app-label User
+                        img.user-mii.mii-bg(src = "{{ i['mii']['face'] }}")
+                        span.user-name {{ i['username'] }}
+                    html {% if !{gameCondition} %}
+                    .d-flex.flex-column.align-items-center.text-center.text-break.user-col
+                        span.app-label Now playing
+                        img.user-banner(src = "{{ i['game']['banner_url'] }}")
+                        span.user-game-name {{ i['game']['name'] }}
+                    html {% endif %}
+            .card-footer.small.text-center.user-footer
+                | Click here to view this user's profile!
+        html {% endfor %}
+
 block content
     .container-fluid.px-4
         include includes/page-header.pug
-        .row
 
+        style.
+            .user-list {
+                display: flex;
+                flex-direction: column;
+                gap: 1rem;
+            }
+            .user-card .card-body {
+                padding: 1.25rem;
+            }
+            .user-mii {
+                height: 96px;
+                border-radius: .5rem;
+            }
+            .user-banner {
+                height: 96px;
+                border-radius: .5rem;
+            }
+            .user-name {
+                font-weight: 600;
+                margin-top: .4rem;
+            }
+            .user-game-name {
+                width: 200px;
+                margin: .4rem 0 0;
+            }
+            .user-footer {
+                border-top: 1px solid rgba(0, 0, 0, .06);
+                color: #8a8a8a;
+                transition: color .15s ease;
+            }
+            .user-card:hover .user-footer {
+                color: #FC8C2C;
+            }
+
+        .row
             .col-xl-4
                 .card.mb-4
                     .card-header
@@ -22,43 +76,11 @@ block content
                         a(href = '/active' style = 'text-decoration: none;')
                             b {{ data['num'] }}
                             | Actively Playing Users...
-                    .card-body
-                        html {% for i in data['active'] %}
-                        a(href = "/user/{{ i['friendCode'] }}?network={{ i['network'] }}", style = 'text-decoration: none; color: #000;').card.mb-4
-                            .card-body.d-flex.flex-row.flex-wrap.justify-content-center.align-items-begin
-                                div.d-flex.flex-column.align-items-center(style = 'padding-right: 10px; padding-bottom: 10px;')
-                                    | User:
-                                    img(src = "{{ i['mii']['face'] }}", height = '100vw', style = 'background: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0.1) 100%);')
-                                    | {{ i['username'] }}
-                                html {% if not i['game']['name'] in ('Home Screen', 'Unknown 3DS App') %}
-                                div.d-flex.flex-column.align-items-center.text-center.text-break(style = 'padding-left: 10px;')
-                                    | Currently playing game:
-                                    img(src = "{{ i['game']['banner_url'] }}", height = '100vw')
-                                    p(style = 'width: 200px;') {{ i['game']['name'] }}
-                                html {% endif %}
-                            .card-footer.small.text-center.text-muted
-                                | Click here to view this user's profile!
-                        html {% endfor %}
+                    +userList('active', "not i['game']['name'] in ('Home Screen', 'Unknown 3DS App')")
             .col-xl-4
                 .card.mb-4
                     .card-header
                         i.fas.fa-chart-bar.me-1
                         a(href = '/roster' style = 'text-decoration: none;')
                             | Recently Joined Users...
-                    .card-body
-                        html {% for i in data['new'] %}
-                        a(href = "/user/{{ i['friendCode'] }}?network={{ i['network'] }}", style = 'text-decoration: none; color: #000;').card.mb-4
-                            .card-body.d-flex.flex-row.flex-wrap.justify-content-center.align-items-begin
-                                div.d-flex.flex-column.align-items-center(style = 'padding-right: 10px; padding-bottom: 10px;')
-                                    | User:
-                                    img(src = "{{ i['mii']['face'] }}", height = '100vw', style = 'background: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0.1) 100%);')
-                                    | {{ i['username'] }}
-                                html {% if i['game'] %}
-                                div.d-flex.flex-column.align-items-center.text-center.text-break(style = 'padding-left: 10px;')
-                                    | Currently playing game:
-                                    img(src = "{{ i['game']['banner_url'] }}", height = '100vw')
-                                    p(style = 'width: 200px;') {{ i['game']['name'] }}
-                                html {% endif %}
-                            .card-footer.small.text-center.text-muted
-                                | Click here to view this user's profile!
-                        html {% endfor %}
+                    +userList('new', "i['game']")

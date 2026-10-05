@@ -22,6 +22,10 @@ block content
             function copyKey() {
                 navigator.clipboard.writeText(document.getElementById('apiKeyInput').value);
             }
+            function toggleKey() {
+                var input = document.getElementById('apiKeyInput');
+                input.type = input.type === 'password' ? 'text' : 'password';
+            }
             function regenerateKey() {
                 var xmlHttp = new XMLHttpRequest();
                 xmlHttp.open( "POST", "/api/regenerate-key/", false );
@@ -31,40 +35,40 @@ block content
                 }
             }
 
-        .d-flex.justify-content-center
-            .col-12
-                .card
-                    .card-body.d-flex.justify-content-center
-                        div
-                            .form-check.form-switch
-                                html {% if data['profileButton'] %}
-                                input.form-check-input#profileButton(type = 'checkbox' role = 'switch' onchange = 'update(this)' checked autocomplete = 'off')
-                                html {% else %}
-                                input.form-check-input#profileButton(type = 'checkbox' role = 'switch' onchange = 'update(this)' autocomplete = 'off')
-                                html {% endif %}
-                                label.form-check-label(for = 'profileButton') Allow others to click your status to view your profile?
-                            br
-                            .form-check.form-switch
-                                html {% if data['smallImage'] %}
-                                input.form-check-input#smallImage(type = 'checkbox' role = 'switch' onchange = 'update(this)' checked autocomplete = 'off')
-                                html {% else %}
-                                input.form-check-input#smallImage(type = 'checkbox' role = 'switch' onchange = 'update(this)' autocomplete = 'off')
-                                html {% endif %}
-                                label.form-check-label(for = 'smallImage') Show a small image of your Mii to Discord?
-                            br
-                            .form-check.form-switch
-                                html {% if data['rpcEnabled'] %}
-                                input.form-check-input#rpcEnabled(type = 'checkbox' role = 'switch' onchange = 'update(this)' checked autocomplete = 'off')
-                                html {% else %}
-                                input.form-check-input#rpcEnabled(type = 'checkbox' role = 'switch' onchange = 'update(this)' autocomplete = 'off')
-                                html {% endif %}
-                                label.form-check-label(for = 'rpcEnabled') Allow 3DS-RPC to set Discord RPC?
-                .card.mt-3
-                    .card-header
-                        b API Key
-                    .card-body
-                        p.text-muted.small Use this key in your 3DS-RPC client to authenticate your console(s). Keep it secret - anyone with this key can fetch your presence.
-                        .input-group
-                            input#apiKeyInput.form-control(type = 'text' value = '{{ data["apiKey"] }}' readonly)
-                            button.btn.btn-primary(type = 'button' onclick = 'copyKey()') Copy
-                            button.btn.btn-secondary(type = 'button' onclick = 'regenerateKey()') Regenerate
+        style.
+            #apiKeyInput {
+                cursor: pointer;
+            }
+
+        .card.app-card.mb-3
+            .card-header Preferences
+            .card-body
+                .form-check.form-switch.py-2
+                    html {% if data['profileButton'] %}
+                    input.form-check-input#profileButton(type = 'checkbox' role = 'switch' onchange = 'update(this)' checked autocomplete = 'off')
+                    html {% else %}
+                    input.form-check-input#profileButton(type = 'checkbox' role = 'switch' onchange = 'update(this)' autocomplete = 'off')
+                    html {% endif %}
+                    label.form-check-label(for = 'profileButton') Allow others to click your status to view your profile?
+                .form-check.form-switch.py-2
+                    html {% if data['smallImage'] %}
+                    input.form-check-input#smallImage(type = 'checkbox' role = 'switch' onchange = 'update(this)' checked autocomplete = 'off')
+                    html {% else %}
+                    input.form-check-input#smallImage(type = 'checkbox' role = 'switch' onchange = 'update(this)' autocomplete = 'off')
+                    html {% endif %}
+                    label.form-check-label(for = 'smallImage') Show a small image of your Mii to Discord?
+                .form-check.form-switch.py-2
+                    html {% if data['rpcEnabled'] %}
+                    input.form-check-input#rpcEnabled(type = 'checkbox' role = 'switch' onchange = 'update(this)' checked autocomplete = 'off')
+                    html {% else %}
+                    input.form-check-input#rpcEnabled(type = 'checkbox' role = 'switch' onchange = 'update(this)' autocomplete = 'off')
+                    html {% endif %}
+                    label.form-check-label(for = 'rpcEnabled') Allow 3DS-RPC to set Discord RPC?
+        .card.app-card
+            .card-header API Key
+            .card-body
+                p.text-muted.small Use this key in your 3DS-RPC client to authenticate your console(s). Keep it secret - anyone with this key can fetch your presence.
+                .input-group
+                    input#apiKeyInput.form-control(type = 'password' value = '{{ data["apiKey"] }}' readonly onclick = 'toggleKey()')
+                    button.btn.btn-primary(type = 'button' onclick = 'copyKey()') Copy
+                    button.btn.btn-secondary(type = 'button' onclick = 'regenerateKey()') Regenerate
