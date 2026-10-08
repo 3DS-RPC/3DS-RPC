@@ -25,9 +25,13 @@ block content
             }
             .console-grid {
                 display: grid;
-                grid-template-columns: 1fr 3fr 1fr 1fr;
+                grid-template-columns: 1fr 3fr 1fr 1fr 1fr;
                 align-items: center;
                 width: 100%;
+            }
+            .console-grid .last-updated {
+                font-size: .8rem;
+                color: #5b534c;
             }
             .console-grid > div {
                 display: flex;
@@ -83,6 +87,8 @@ block content
                         b Refresh
                     div
                         b Delete
+                    div
+                        b Last Updated
             .card-body
                 html {% for console in data['consoles'] %}
                 .card.g-0.shadow-lg.border-0.rounded-lg.subsequentCard(style = 'margin-bottom: 25px;')
@@ -113,6 +119,12 @@ block content
                             div
                                 a(href = "javascript:deleteCode({{ console['fc'].replace('-', '') }}, '{{ console['network']}}');" style = 'text-decoration: none;')
                                     b Delete
+                            div.last-updated
+                                html {% if console['last_updated'] %}
+                                span(title = '{{ console["last_updated"] }}') {{ console['last_updated_text'] }}
+                                html {% else %}
+                                span Never
+                                html {% endif %}
                 html {% endfor %}
         .card.text-center.shadow-lg.border-0.rounded-lg
             .card-header

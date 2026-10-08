@@ -518,6 +518,21 @@ def get_connected_consoles(discord_id: int):
     return [(result.friend_code, result.active, result.network) for result in result]
 
 
+def format_relative_time(epoch: int) -> str:
+    """Human-friendly 'how long ago a timestamp was' string."""
+    if not epoch:
+        return 'Never'
+    elapsed = time.time() - epoch
+    if elapsed < 10:
+        return 'Just now'
+    if elapsed < 600:
+        return f'{int(elapsed)} seconds ago'
+    if elapsed < 86400:
+        s = str(datetime.timedelta(seconds=int(elapsed))).split(':')
+        return f'{int(s[0])}h, {int(s[1])}m ago'
+    return datetime.datetime.fromtimestamp(epoch).strftime('%b %d, %Y')
+
+
 def sidenav():
     from api.metrics import get_cached_network_metrics
     from datetime import datetime, timedelta
@@ -942,7 +957,9 @@ def consoles():
             'username': username,
             'active': active,
             'network': network.lower_name(),
-            'tracked': result is not None
+            'tracked': result is not None,
+            'last_updated': result.last_updated if result else 0,
+            'last_updated_text': format_relative_time(result.last_updated) if result else 'Never',
         })
     data.update(sidenav())
     response = render_template('dist/consoles.html', data=data)
