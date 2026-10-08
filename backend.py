@@ -283,6 +283,9 @@ async def main():
 		users_processed_this_loop = len(current_rotation)
 
 		if not current_rotation:
+			# A quick pass with nobody online still ran; refresh the queue's last-update timestamp.
+			if not is_full_loop:
+				begin_loop_progress(0, network, 'quick')
 			record_loop_end(0, network)
 			continue
 
@@ -355,6 +358,11 @@ async def main():
 				update_backend_heartbeat(network)
 				await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
+			# Throttle every batch independently (~1s per user in the batch,
+			# clamped to 10-300s) so each 100-user block is paced on its own
+			# and large passes scale instead of hitting one fixed cap.
+			await anyio.sleep(min(300, max(10, len(batch))))
+
 		if scrape_only:
 			print('Done scraping.')
 			break
@@ -362,16 +370,10 @@ async def main():
 		record_loop_end(users_processed_this_loop, network)
 		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
 		duration = get_backend_metrics(network)["last_loop_duration_seconds"] or 0
-		queue_batch_delay = min(300, max(10, users_processed_this_loop))
-
-		# The delay scales with queue size to prevent overwhelming Pretendo:
-		#   - Minimum delay: 60 seconds (prevents loops from running too fast for small queues)
-		#   - Maximum delay: 300 seconds / 5 minutes (prevents excessive waiting for very large queues)
 		if outage_detected:
-			print(f"[{timestamp}] {network.lower_name()} is down; retrying in {queue_batch_delay}s")
+			print(f"[{timestamp}] {network.lower_name()} is down; retrying next pass")
 		else:
-			print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s, applying delay of {queue_batch_delay}s")
-		await anyio.sleep(queue_batch_delay)
+			print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s")
 
 
 async def wipe_friends_list(friends_client: friends.FriendsClientV1) -> None:
@@ -580,7 +582,7 @@ async def refresh_friend_states(friends_client: friends.FriendsClientV1, session
 		# All of our friends removed us, so there's no more work to be done.
 		return
 
-	await update_presences(friends_client, session, current_friend_pids)
+	await update_presences(friends_client, session, current_friend_pids, rotation_pids={f.pid for f in current_rotation})
 	await update_profiles(friends_client, session, added_friends, current_friends_list)
 
 
@@ -655,7 +657,10 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 				last_updated=time.time()
 			)
 		)
-		advance_loop_progress(network)
+		# Only count queue members toward this loop's progress; the presence
+		# response can include friends outside the current rotation.
+		if rotation_pids is None or game.pid in rotation_pids:
+			advance_loop_progress(network)
 
 	# Otherwise, if we have no presence data, this user must be offline.
 	for offline_user in [h for h in current_friend_pids if not h in online_user_pids]:
