@@ -56,6 +56,9 @@ class Friend(Base):
     favorite_game: Mapped[int] = mapped_column("favorite_game", BigInteger(), nullable=False)
     refresh_requested: Mapped[bool] = mapped_column("refresh_requested", nullable=False, default=False)
     last_refresh: Mapped[int] = mapped_column("last_refresh", BigInteger(), nullable=False, default=0)
+    # Unix time the backend last processed this console (presence poll). Unlike
+    # `last_accessed`, this advances every loop so the UI can show freshness.
+    last_updated: Mapped[int] = mapped_column("last_updated", BigInteger(), nullable=False, default=0)
 
 
 class BackendMetrics(Base):

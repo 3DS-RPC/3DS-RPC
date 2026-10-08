@@ -621,7 +621,8 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 				upd_id=game.presence.game_key.title_version,
 				joinable=joinable,
 				game_description=game_description,
-				last_online=time.time()
+				last_online=time.time(),
+				last_updated=time.time()
 			)
 		)
 		advance_loop_progress(network)
@@ -636,7 +637,8 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 			.values(
 				online=False,
 				title_id=0,
-				upd_id=0
+				upd_id=0,
+				last_updated=time.time()
 			)
 		)
 		advance_loop_progress(network)
