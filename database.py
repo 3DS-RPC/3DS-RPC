@@ -89,6 +89,11 @@ class DiscordFriends(Base):
     friend_code: Mapped[str] = mapped_column("friend_code", primary_key=True, nullable=False)
     network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue())
     active: Mapped[bool]
+    # Console health marker (ok/degraded/error) from the backend's user loop.
+    # health_reason stores a short code resolved via api.health.HEALTH_REASONS.
+    health: Mapped[str] = mapped_column("health", String(16), nullable=False, default='ok')
+    health_reason: Mapped[Optional[str]] = mapped_column("health_reason", String(32))
+    health_updated: Mapped[int] = mapped_column("health_updated", BigInteger(), nullable=False, default=0)
 
 
 class Discord(Base):

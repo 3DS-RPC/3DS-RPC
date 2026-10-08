@@ -42,6 +42,23 @@ block content
             .console-grid .console-title {
                 grid-column: 2;
             }
+            .health-marker {
+                display: inline-block;
+                width: 10px;
+                height: 10px;
+                margin-left: 8px;
+                border-radius: 50%;
+                vertical-align: middle;
+            }
+            .health-marker.health-degraded {
+                background-color: #ffb759;
+            }
+            .health-marker.health-error {
+                background-color: #e74c3c;
+            }
+            .health-marker.health-ok {
+                background-color: #28a745;
+            }
 
         script.
             function clicked(active, fc, network) {
@@ -99,6 +116,7 @@ block content
                         .console-grid
                             .console-title
                                 b Console {{ loop.index0 + 1 }} ({{ console['fc'] }} on {{ console['network'].capitalize() }})
+                                span.health-marker(class = "health-{{ console['health'] }}", title = '{{ console["health_reason_label"] }}')
                     .card-body.m-0.p-0
                         .console-grid.p-3
                             div
