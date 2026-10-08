@@ -1,0 +1,206 @@
+extends ../layouts/dashboard.pug
+
+block config
+    - var bodyClass = 'sb-nav-fixed'
+    - var pageTitle = 'Status'
+    - var index = true
+    - var sidenavStyle = 'sb-sidenav-dark'
+
+block content
+    .container-fluid.px-4
+        include includes/page-header.pug
+
+        style.
+            .status-pill {
+                padding: .35rem .75rem;
+                border-radius: 1rem;
+                font-weight: 600;
+                font-size: .85rem;
+            }
+            .status-pill.up {
+                background-color: #d1f7d4;
+                color: #1b7d2f;
+            }
+            .status-pill.down {
+                background-color: #fbd5d5;
+                color: #a11c1c;
+            }
+            .status-pill.semi {
+                background-color: #fdeccd;
+                color: #925e08;
+            }
+            .queue-row {
+                display: flex;
+                align-items: center;
+                gap: .75rem;
+            }
+            .queue-row .queue-label {
+                min-width: 6.5rem;
+                font-weight: 600;
+                font-size: .85rem;
+            }
+            .queue-row .progress {
+                flex: 1;
+                height: 1.5rem;
+            }
+            .queue-row .queue-ago {
+                min-width: 9rem;
+                text-align: right;
+                font-size: .8rem;
+                color: #6c757d;
+            }
+            .queue-meta {
+                font-size: .85rem;
+                color: #6c757d;
+            }
+
+        .card.shadow-lg.border-0.rounded-lg.mb-3
+            .card-header.d-flex.align-items-center.justify-content-between
+                b Service Status
+                span.status-pill.semi(id = 'global-status') Checking...
+            .card-body
+                p.mb-0.small.text-muted
+                    | Live view of the backend queues for each network. Progress advances as
+                    | each console is checked, so it reflects how quickly the network can be
+                    | iterated right now.
+
+        html {% for network in ('nintendo', 'pretendo') %}
+        .card.shadow-lg.border-0.rounded-lg.mb-3
+            .card-header.d-flex.align-items-center.justify-content-between
+                b(id = '{{ network }}-name')
+                    | {{ network.capitalize() }} Backend
+                span.status-pill.semi(id = '{{ network }}-status') Checking...
+            .card-body
+                .queue-row.mb-2
+                    span.queue-label Full Queue
+                    .progress
+                        .progress-bar(id = '{{ network }}-full-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["full"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["full"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["full"]["total"] }}')
+                            span(id = '{{ network }}-full-progress')
+                                | {{ data["service"]["networks"][network]["progress"]["full"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["full"]["total"] }}
+                    span.queue-ago(id = '{{ network }}-full-last') Checking...
+                .queue-row.mb-2
+                    span.queue-label Quick Queue
+                    .progress
+                        .progress-bar.progress-bar-striped(id = '{{ network }}-quick-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["quick"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["quick"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["quick"]["total"] }}')
+                            span(id = '{{ network }}-quick-progress')
+                                | {{ data["service"]["networks"][network]["progress"]["quick"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["quick"]["total"] }}
+                    span.queue-ago(id = '{{ network }}-quick-last') Checking...
+                .d-flex.flex-wrap.justify-content-between.queue-meta
+                    span Last heartbeat: <span id='{{ network }}-last-heartbeat'>{{ data["service"]["networks"][network]["last_seen"] }}</span>
+                    span Uptime: <span id='{{ network }}-uptime'>{{ data["service"]["networks"][network]["uptime_seconds"] }}</span>
+                    span Tracked consoles: <span id='{{ network }}-tracked'>{{ data["service"]["networks"][network]["tracked"] }}</span>
+                    span Last loop: <span id='{{ network }}-last-loop'>{{ data["service"]["networks"][network]["last_loop_duration_seconds"] }}</span>
+        html {% endfor %}
+
+        .card.shadow-lg.border-0.rounded-lg.mb-3
+            .card-header
+                b About the queues
+            .card-body.queue-meta
+                p.mb-2 The <b>Full Queue</b> is every registered console, swept once every 10th loop so the whole roster stays in sync.
+                p.mb-0 The <b>Quick Queue</b> is the online consoles only, checked on the loops in between for lower-latency presence updates.
+
+        script.
+            function relativeTime(epoch) {
+                if (!epoch) return 'Never';
+                var seconds = Math.floor(Date.now() / 1000 - epoch);
+                if (seconds < 10) return 'Just now';
+                if (seconds < 60) return seconds + ' seconds ago';
+                if (seconds < 3600) return Math.floor(seconds / 60) + ' minutes ago';
+                if (seconds < 86400) return Math.floor(seconds / 3600) + ' hours, ' + Math.floor((seconds % 3600) / 60) + ' minutes ago';
+                var d = new Date(epoch * 1000);
+                return d.toLocaleDateString();
+            }
+
+            function formatUptime(seconds) {
+                if (!seconds || seconds <= 0) return 'Offline';
+                var d = Math.floor(seconds / 86400);
+                var h = Math.floor((seconds % 86400) / 3600);
+                var m = Math.floor((seconds % 3600) / 60);
+                if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+                if (h > 0) return h + 'h ' + m + 'm';
+                return m + 'm';
+            }
+
+            function formatDuration(seconds) {
+                if (seconds == null || seconds <= 0) return 'n/a';
+                return seconds.toFixed(1) + 's';
+            }
+
+            function setPill(id, online, networkDown) {
+                var pill = document.getElementById(id);
+                if (!pill) return;
+                if (online) {
+                    pill.textContent = 'Up';
+                    pill.className = 'status-pill up';
+                } else {
+                    pill.textContent = networkDown ? 'Network Down' : 'Offline';
+                    pill.className = 'status-pill down';
+                }
+            }
+
+            function renderQueue(key, mode, data) {
+                var bar = document.getElementById(key + '-' + mode + '-bar');
+                var progress = document.getElementById(key + '-' + mode + '-progress');
+                var last = document.getElementById(key + '-' + mode + '-last');
+                if (bar) bar.style.width = data.percent + '%';
+                if (progress) progress.textContent = data.processed + ' / ' + data.total;
+                if (last) last.textContent = relativeTime(data.last_update);
+            }
+
+            function renderStatus(data) {
+                var networks = data.networks || {};
+                var onlineCount = 0;
+                Object.keys(networks).forEach(function (key) {
+                    var net = networks[key];
+                    setPill(key + '-status', net.online, net.network_status === 'down');
+                    if (net.online) onlineCount++;
+
+                    var progress = net.progress || {};
+                    renderQueue(key, 'full', progress.full || { processed: 0, total: 0, percent: 0, last_update: 0 });
+                    renderQueue(key, 'quick', progress.quick || { processed: 0, total: 0, percent: 0, last_update: 0 });
+
+                    var lastHeartbeat = document.getElementById(key + '-last-heartbeat');
+                    if (lastHeartbeat) lastHeartbeat.textContent = relativeTime(net.last_seen);
+                    var uptime = document.getElementById(key + '-uptime');
+                    if (uptime) uptime.textContent = formatUptime(net.uptime_seconds);
+                    var tracked = document.getElementById(key + '-tracked');
+                    if (tracked) tracked.textContent = net.tracked;
+                    var lastLoop = document.getElementById(key + '-last-loop');
+                    if (lastLoop) lastLoop.textContent = formatDuration(net.last_loop_duration_seconds);
+                });
+
+                var global = document.getElementById('global-status');
+                if (global) {
+                    if (onlineCount === Object.keys(networks).length) {
+                        global.textContent = data.status || 'Operational';
+                        global.className = 'status-pill up';
+                    } else if (onlineCount > 0) {
+                        global.textContent = 'Semi-Operational';
+                        global.className = 'status-pill semi';
+                    } else {
+                        global.textContent = 'Offline';
+                        global.className = 'status-pill down';
+                    }
+                }
+            }
+
+            function loadStatus() {
+                var xmlHttp = new XMLHttpRequest();
+                xmlHttp.open('GET', '/api/status/', true);
+                xmlHttp.onreadystatechange = function () {
+                    if (xmlHttp.readyState === 4 && xmlHttp.status === 200) {
+                        try {
+                            renderStatus(JSON.parse(xmlHttp.responseText));
+                        } catch (e) {
+                            console.error('Failed to parse status response', e);
+                        }
+                    }
+                };
+                xmlHttp.send();
+            }
+
+            (function () {
+                renderStatus({{ data['service'] | tojson }});
+                loadStatus();
+                setInterval(loadStatus, 5000);
+            })();

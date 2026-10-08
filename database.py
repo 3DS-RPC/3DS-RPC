@@ -69,6 +69,12 @@ class BackendMetrics(Base):
     last_loop_end_time: Mapped[float] = mapped_column("last_loop_end_time", nullable=False, default=0.0)
     current_loop_queue: Mapped[int] = mapped_column("current_loop_queue", Integer(), nullable=False, default=0)
     last_loop_queue: Mapped[int] = mapped_column("last_loop_queue", Integer(), nullable=False, default=0)
+    full_loop_current: Mapped[int] = mapped_column("full_loop_current", Integer(), nullable=False, default=0)
+    full_loop_total: Mapped[int] = mapped_column("full_loop_total", Integer(), nullable=False, default=0)
+    full_loop_last_update: Mapped[float] = mapped_column("full_loop_last_update", nullable=False, default=0.0)
+    quick_loop_current: Mapped[int] = mapped_column("quick_loop_current", Integer(), nullable=False, default=0)
+    quick_loop_total: Mapped[int] = mapped_column("quick_loop_total", Integer(), nullable=False, default=0)
+    quick_loop_last_update: Mapped[float] = mapped_column("quick_loop_last_update", nullable=False, default=0.0)
     backend_start_time: Mapped[float] = mapped_column("backend_start_time", nullable=False, default=0.0)
     network_status: Mapped[str] = mapped_column("network_status", String(16), nullable=False, default='up')
 
