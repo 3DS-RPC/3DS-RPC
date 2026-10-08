@@ -15,6 +15,7 @@ from api.love2 import *
 from api.private import CLIENT_ID, CLIENT_SECRET, HOST, DISCORD_SCOPE
 from api.public import PRETENDO_BOT_FC, NINTENDO_BOT_FC
 from api.networks import NetworkType, name_to_network_type
+from api.health import health_reason_label
 from api.metrics import init_db
 from database import *
 
@@ -524,7 +525,14 @@ def get_connected_consoles(discord_id: int):
     stmt = select(DiscordFriends).where(DiscordFriends.id == discord_id)
     result = db.session.scalars(stmt).all()
     
-    return [(result.friend_code, result.active, result.network) for result in result]
+    return [{
+        'friend_code': row.friend_code,
+        'active': row.active,
+        'network': row.network,
+        'health': row.health,
+        'health_reason': row.health_reason,
+        'health_updated': row.health_updated,
+    } for row in result]
 
 
 def format_relative_time(epoch: int) -> str:
@@ -947,7 +955,10 @@ def consoles():
         # Stale session cookie; clear it and force a fresh Discord login.
         response = make_response(redirect('/connect'))
         return clear_session_cookies(response)
-    for console, active, network_type in get_connected_consoles(discord_id):
+    for connection in get_connected_consoles(discord_id):
+        console = connection['friend_code']
+        active = connection['active']
+        network_type = connection['network']
         network = NetworkType(network_type)
         stmt = (
             select(Friend)
@@ -969,6 +980,17 @@ def consoles():
             'tracked': result is not None,
             'last_updated': result.last_updated if result else 0,
             'last_updated_text': format_relative_time(result.last_updated) if result else 'Never',
+            # A console the backend can't track (no Friend row, or one that has
+            # never been evaluated - health_updated stays 0) has no real health
+            # to report, so derive an error marker instead of a misleading "ok".
+            'health': 'error' if (result is None or connection['health_updated'] == 0) else connection['health'],
+            'health_reason_label': (
+                'Not tracked' if result is None
+                else 'Awaiting first sync' if connection['health_updated'] == 0
+                else health_reason_label(connection['health_reason'])
+            ),
+            'health_updated': connection['health_updated'],
+            'health_updated_text': format_relative_time(connection['health_updated']),
         })
     data.update(sidenav())
     response = render_template('dist/consoles.html', data=data)
@@ -1115,7 +1137,10 @@ def active_consoles():
         }
 
     consoles = []
-    for friend_code, active, network_type in get_connected_consoles(discord_user.id):
+    for connection in get_connected_consoles(discord_user.id):
+        friend_code = connection['friend_code']
+        active = connection['active']
+        network_type = connection['network']
         # Only the single currently-active console is returned to the client.
         if not active:
             continue

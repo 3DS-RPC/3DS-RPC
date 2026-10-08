@@ -47,6 +47,7 @@ _startup_wipe_done: bool = False
 import logging
 
 from api import *
+from api.health import HEALTH_DEGRADED, HEALTH_ERROR, HEALTH_OK, health_reason_label
 from api.love2 import *
 from api.networks import InvalidNetworkError, NetworkType
 from api.private import (
@@ -71,6 +72,8 @@ from api.private import (
 )
 
 logging.basicConfig(level=logging.INFO)
+
+log = logging.getLogger(__name__)
 
 DEBUG = True
 if not DEBUG:
@@ -140,6 +143,22 @@ def is_network_outage(exc: Exception) -> bool:
 	if isinstance(exc, _nasc.NASCError):
 		return exc.return_code == 110
 	return isinstance(exc, (OSError, TimeoutError))
+
+
+def set_console_health(session: Session, friend_code: str, network: NetworkType, health: str, reason: Optional[str] = None, log_issue: bool = True) -> None:
+	"""Persist a health marker for a console and log one line when it's not OK."""
+	session.execute(
+		update(DiscordFriends)
+		.where(DiscordFriends.friend_code == friend_code)
+		.where(DiscordFriends.network == network)
+		.values(
+			health=health,
+			health_reason=reason,
+			health_updated=time.time()
+		)
+	)
+	if log_issue and health != HEALTH_OK:
+		log.warning('[HEALTH] %s on %s -> %s: %s', friend_code, network.lower_name(), health, health_reason_label(reason))
 
 
 class QueriedFriend:
@@ -593,10 +612,21 @@ def detect_unfriended(session: Session, current_rotation: list[QueriedFriend], c
 	return added_friends, unfriended_codes
 
 
-async def update_presences(friends_client: friends.FriendsClientV1, session: Session, current_friend_pids: List[int]) -> None:
+async def update_presences(friends_client: friends.FriendsClientV1, session: Session, current_friend_pids: List[int], rotation_pids: Optional[set] = None) -> None:
 	await anyio.sleep(DELAY_TABLE["GET_PRESENCE"])
 
-	tracked_presences = await friends_client.get_friend_presence(current_friend_pids)
+	tracked_presences = None
+	try:
+		tracked_presences = await friends_client.get_friend_presence(current_friend_pids)
+	except Exception:
+		# We couldn't read statuses for this batch; mark the consoles affected
+		# and re-raise so the existing outage handling in the main loop runs.
+		for pid in current_friend_pids:
+			status_code = str(principal_id_to_friend_code(pid)).zfill(12)
+			set_console_health(session, status_code, network, HEALTH_ERROR, 'status_read_failed', log_issue=False)
+		session.commit()
+		log.warning('[HEALTH] status read failed on %s', network.lower_name())
+		raise
 	online_user_pids: List[int] = []
 
 	for game in tracked_presences:
@@ -641,7 +671,14 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 				last_updated=time.time()
 			)
 		)
-		advance_loop_progress(network)
+		if rotation_pids is None or offline_user in rotation_pids:
+			advance_loop_progress(network)
+
+	# Presence was read successfully: mark every processed console healthy as a
+	# baseline. Profile-specific issues in update_profiles override this later.
+	for pid in current_friend_pids:
+		friend_code = str(principal_id_to_friend_code(pid)).zfill(12)
+		set_console_health(session, friend_code, network, HEALTH_OK)
 	session.commit()
 
 
@@ -674,6 +711,7 @@ async def update_profiles(friends_client: friends.FriendsClientV1, session: Sess
 			current_info = await friends_client.get_friend_persistent_info([current_friend.pid,])
 		except Exception as e:
 			print(f'Failed to get persistent info for {current_friend.friend_code}: {e}')
+			set_console_health(session, current_friend.friend_code, network, HEALTH_ERROR, 'info_read_failed')
 			continue
 		comment: str = current_info[0].message
 		favorite_game: int = 0
@@ -701,8 +739,13 @@ async def update_profiles(friends_client: friends.FriendsClientV1, session: Sess
 
 			# Get user's favorite game
 			favorite_game = current_info[0].game_key.title_id
+			set_console_health(session, current_friend.friend_code, network, HEALTH_OK)
 		else:
 			comment = ''
+			# A comment ending in a space is the 3DS signal that the user asked
+			# us to skip their profile, so we mark the console degraded instead
+			# of scraping their Mii/username.
+			set_console_health(session, current_friend.friend_code, network, HEALTH_DEGRADED, 'comment_space')
 
 		pending_updates.append({
 			'friend_code': current_friend.friend_code,
