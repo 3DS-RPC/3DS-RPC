@@ -419,6 +419,15 @@ def clear_session_cookies(response):
     return response
 
 
+def invalid_session_response():
+    """Returned by API endpoints when the caller's site session token no longer
+    maps to an account. Clearing the stale cookies makes the UI reflect the
+    logged-out state before the frontend redirects to /connect.
+    """
+    response = make_response('failure!\nyour session is invalid!')
+    return clear_session_cookies(response)
+
+
 def discord_reauth_redirect(reason: str):
     """Send the user to the error page with the Reconnect button enabled."""
     response = make_response(redirect('/error?reauth=1&reason=' + quote(reason)))
@@ -1178,8 +1187,14 @@ def toggler(friend_code: int):
 
     f = request.data.decode('utf-8').split(',')
     token = f[0]
-    active = bool(int(f[1]))
-    discord_id = user_from_token(token).id
+    try:
+        active = bool(int(f[1]))
+    except (IndexError, ValueError):
+        return 'failure!\nmalformed request!'
+    try:
+        discord_id = user_from_token(token).id
+    except UserError:
+        return invalid_session_response()
 
     if not result:
         if not active:
@@ -1257,7 +1272,10 @@ def deleter(friend_code: int):
         data = request.data.decode('utf-8').split(',')
         token = data[0]
         network = name_to_network_type(data[1])
-    discord_id = user_from_token(token).id
+    try:
+        discord_id = user_from_token(token).id
+    except UserError:
+        return invalid_session_response()
 
     # Only the console's owner may remove it, and only then do we stop tracking it.
     owned = db.session.scalar(
@@ -1295,9 +1313,14 @@ def refresher(friend_code: int):
     except:
         return 'failure!\nthat is not a real friendCode!'
     data = request.data.decode('utf-8').split(',')
+    if len(data) < 2:
+        return 'failure!\nmalformed request!'
     token = data[0]
     network = name_to_network_type(data[1])
-    discord_id = user_from_token(token).id
+    try:
+        discord_id = user_from_token(token).id
+    except UserError:
+        return invalid_session_response()
 
     owned = db.session.scalar(
         select(DiscordFriends)
@@ -1327,8 +1350,10 @@ def refresher(friend_code: int):
 def regenerate_key():
     try:
         discord_user = user_from_token(request.cookies['token'])
-    except Exception:
-        return 'failure!\nyour session is invalid!'
+    except (UserError, KeyError):
+        # KeyError: the browser sent no token cookie at all, which is the same
+        # dead-session case as a token that no longer maps to an account.
+        return invalid_session_response()
     new_key = secrets.token_hex(16)
 
     try:
@@ -1350,6 +1375,11 @@ def settings_toggler(which: str):
     toggle = bool(int(request.data.decode('utf-8')))
     if not which in ('smallImage', 'profileButton', 'rpcEnabled'):
         return 'failure!\nthat is not a valid setting!'
+    token = request.cookies.get('token')
+    if not token:
+        # No session cookie at all; treat it the same as a stale one so the
+        # browser is sent through the reconnect flow instead of a dead toggle.
+        return invalid_session_response()
     if which == 'smallImage':
         which = 'show_small_image'
     elif which == 'profileButton':
@@ -1357,14 +1387,18 @@ def settings_toggler(which: str):
     else:
         which = 'rpc_enabled'
     try:
-        db.session.execute(
+        result = db.session.execute(
             update(Discord)
-            .where(Discord.site_session_token == request.cookies['token'])
+            .where(Discord.site_session_token == token)
             .values({getattr(Discord, which): toggle})
         )
-
-        db.session.commit() 
-    except:
+        if not result.rowcount:
+            # The cookie no longer maps to an account, so nothing was updated.
+            db.session.rollback()
+            return invalid_session_response()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
         return 'failure!\nwe couldn\'t update that setting!'
     return 'success!'
 
@@ -1443,7 +1477,10 @@ def refresh():
             response.set_cookie('pfp', pfp, expires=datetime.datetime.now() + datetime.timedelta(days=30))
             return response
         except:
-            delete_discord_user(user_from_token(request.cookies['token']).id)
+            try:
+                delete_discord_user(user_from_token(request.cookies['token']).id)
+            except (UserError, KeyError):
+                pass
     return redirect('/404.html')
 
 
