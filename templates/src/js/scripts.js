@@ -21,6 +21,10 @@ function eraseCookie(name) {
 
 function redirectOnFailure(responseText) {
   var reason = responseText.replace(/^failure!\s*/, '').split('\n').join(' ');
+  if (/session is invalid/i.test(reason)) {
+    window.location.href = '/connect';
+    return;
+  }
   window.location.href = '/error?reason=' + encodeURIComponent(reason);
 }
 

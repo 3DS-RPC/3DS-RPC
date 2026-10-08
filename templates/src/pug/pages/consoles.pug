@@ -71,6 +71,9 @@ block content
                 xmlHttp.send([token, network]);
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
+                } else if (/session is invalid/i.test(xmlHttp.responseText)) {
+                    // A dead session needs a full recovery, not an alert.
+                    redirectOnFailure(xmlHttp.responseText);
                 } else {
                     alert(xmlHttp.responseText.replace(/^failure!\s*/, ''));
                 }
