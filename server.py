@@ -5,7 +5,7 @@ from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.middleware.proxy_fix import ProxyFix
-import sys, datetime, xmltodict, pickle, secrets, os
+import sys, datetime, xmltodict, pickle, secrets, os, time, threading
 from urllib.parse import urlencode, quote
 
 from sqlalchemy import select, update, insert, delete
@@ -165,6 +165,50 @@ new_user_limit = '2/minute'
 cdn_limit = '60/minute'
 toggler_limit = '5/minute'
 console_list_limit = '3/minute'
+
+status_limit = '60/minute'
+app.view_functions['metrics.api_status'] = limiter.limit(status_limit)(app.view_functions['metrics.api_status'])
+
+
+def _status_refresh_loop(refresh_interval: float) -> None:
+    """Keep the public status cache warm off the request path."""
+    from api.metrics import refresh_status_cache
+    while True:
+        try:
+            with app.app_context():
+                refresh_status_cache()
+        except Exception:
+            app.logger.exception('Failed to refresh status cache')
+        time.sleep(refresh_interval)
+
+
+_status_refresher_started = False
+_status_refresher_lock = threading.Lock()
+
+
+def start_status_refresher() -> None:
+    """Start the background status refresher once per process."""
+    global _status_refresher_started
+    if _status_refresher_started:
+        return
+    with _status_refresher_lock:
+        if _status_refresher_started:
+            return
+        _status_refresher_started = True
+    from api.metrics import PUBLIC_STATUS_REFRESH_INTERVAL
+    thread = threading.Thread(
+        target=_status_refresh_loop,
+        args=(PUBLIC_STATUS_REFRESH_INTERVAL,),
+        name='status-refresher',
+        daemon=True,
+    )
+    thread.start()
+
+
+@app.before_request
+def _warm_status_cache():
+    """Ensure the background status refresher is running in this process."""
+    start_status_refresher()
 
 # Database files
 title_database = []
@@ -475,12 +519,12 @@ def get_connected_consoles(discord_id: int):
 
 
 def sidenav():
-    from api.metrics import get_backend_metrics
+    from api.metrics import get_cached_network_metrics
     from datetime import datetime, timedelta
     import time
     
-    nintendo_metrics = get_backend_metrics(NetworkType.NINTENDO)
-    pretendo_metrics = get_backend_metrics(NetworkType.PRETENDO)
+    nintendo_metrics = get_cached_network_metrics(NetworkType.NINTENDO)
+    pretendo_metrics = get_cached_network_metrics(NetworkType.PRETENDO)
     
     HEARTBEAT_THRESHOLD = 10 * 60  # 10 minutes
     
@@ -494,8 +538,8 @@ def sidenav():
         last_seen = metrics.get('last_seen', 0)
         return time.time() - last_seen < HEARTBEAT_THRESHOLD
     
-    nintendo_uptime = nintendo_metrics['uptime_seconds'] if nintendo_metrics else 0
-    pretendo_uptime = pretendo_metrics['uptime_seconds'] if pretendo_metrics else 0
+    nintendo_metrics['uptime_seconds'] if nintendo_metrics else 0
+    pretendo_metrics['uptime_seconds'] if pretendo_metrics else 0
     
     nintendo_online = is_online(nintendo_metrics)
     pretendo_online = is_online(pretendo_metrics)
@@ -903,6 +947,23 @@ def consoles():
     data.update(sidenav())
     response = render_template('dist/consoles.html', data=data)
     return response
+
+
+# Service status page
+@app.route('/status')
+@limiter.limit(status_limit)
+def status():
+    from api.metrics import get_public_status
+    data = sidenav()
+    data['title'] = 'Status'
+    data['service'] = get_public_status()
+    response = render_template('dist/status.html', data=data)
+    return response
+
+
+@app.route('/status.html')
+def status_redirect():
+    return redirect('/status')
 
 
 @app.route('/user/<string:friend_code>/')

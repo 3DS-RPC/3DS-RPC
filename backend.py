@@ -44,12 +44,32 @@ NEW_USER_PRIORITY_WINDOW = 30 * 60  # 30 minutes since account_creation
 # Whether we've already wiped the remote friendlist for this backend run.
 _startup_wipe_done: bool = False
 
-from api.private import NINTENDO_NEX_PASSWORD, NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME, NINTENDO_REGION, NINTENDO_LANGUAGE, PRETENDO_NEX_PASSWORD, NINTENDO_PID, NINTENDO_PID_HMAC, PRETENDO_SERIAL_NUMBER, PRETENDO_MAC_ADDRESS, PRETENDO_DEVICE_CERT, PRETENDO_DEVICE_NAME, PRETENDO_REGION, PRETENDO_LANGUAGE, PRETENDO_PID, PRETENDO_PID_HMAC
+import logging
+
 from api import *
 from api.love2 import *
-from api.networks import NetworkType, InvalidNetworkError
+from api.networks import InvalidNetworkError, NetworkType
+from api.private import (
+    NINTENDO_DEVICE_CERT,
+    NINTENDO_DEVICE_NAME,
+    NINTENDO_LANGUAGE,
+    NINTENDO_MAC_ADDRESS,
+    NINTENDO_NEX_PASSWORD,
+    NINTENDO_PID,
+    NINTENDO_PID_HMAC,
+    NINTENDO_REGION,
+    NINTENDO_SERIAL_NUMBER,
+    PRETENDO_DEVICE_CERT,
+    PRETENDO_DEVICE_NAME,
+    PRETENDO_LANGUAGE,
+    PRETENDO_MAC_ADDRESS,
+    PRETENDO_NEX_PASSWORD,
+    PRETENDO_PID,
+    PRETENDO_PID_HMAC,
+    PRETENDO_REGION,
+    PRETENDO_SERIAL_NUMBER,
+)
 
-import logging
 logging.basicConfig(level=logging.INFO)
 
 DEBUG = True
@@ -61,12 +81,22 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics, update_backend_heartbeat, set_backend_status
-from api.networks import NetworkType
-
 # When a game server (e.g. Pretendo) is down, its NASC endpoint returns an HTML or bare error page instead of a form-encoded response.
 import nintendo.nasc as _nasc
 from anynet import http as _http
+
+from api.metrics import (
+    advance_loop_progress,
+    begin_loop_progress,
+    get_backend_metrics,
+    init_db,
+    record_loop_end,
+    record_loop_start,
+    reset_metrics,
+    set_backend_status,
+    update_backend_heartbeat,
+)
+from api.networks import NetworkType
 
 
 class NASCUnavailableError(Exception):
@@ -236,6 +266,8 @@ async def main():
 		if not current_rotation:
 			record_loop_end(0, network)
 			continue
+
+		begin_loop_progress(len(current_rotation), network, 'full' if is_full_loop else 'quick')
 
 		outage_detected = False
 
@@ -592,6 +624,7 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 				last_online=time.time()
 			)
 		)
+		advance_loop_progress(network)
 
 	# Otherwise, if we have no presence data, this user must be offline.
 	for offline_user in [h for h in current_friend_pids if not h in online_user_pids]:
@@ -606,6 +639,7 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 				upd_id=0
 			)
 		)
+		advance_loop_progress(network)
 	session.commit()
 
 

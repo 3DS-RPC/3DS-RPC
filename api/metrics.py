@@ -1,12 +1,13 @@
 from __future__ import annotations
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import case, func
+from sqlalchemy import case, func, update
 
 from api.networks import NetworkType
 from database import Discord, DiscordFriends, Friend
@@ -16,6 +17,12 @@ metrics_bp = Blueprint('metrics', __name__)
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'metrics_keys.json')
 
 db = None
+
+# How stale the last backend heartbeat may be before we consider a network down.
+HEARTBEAT_THRESHOLD = 10 * 60  # 10 minutes
+_PROGRESS_PERSIST_INTERVAL = 1.0
+_loop_progress_state: dict = {}
+_last_progress_persist: dict = {}
 
 
 def init_db(database_instance):
@@ -47,6 +54,12 @@ class BackendMetrics:
     last_loop_queue: int = 0
     loop_counter: int = 0
     network_status: str = 'up'
+    full_loop_current: int = 0
+    full_loop_total: int = 0
+    full_loop_last_update: float = 0.0
+    quick_loop_current: int = 0
+    quick_loop_total: int = 0
+    quick_loop_last_update: float = 0.0
 
     @property
     def uptime_seconds(self) -> float:
@@ -81,6 +94,12 @@ def reset_metrics(network: NetworkType) -> None:
             last_loop_end_time=0.0,
             current_loop_queue=0,
             last_loop_queue=0,
+            full_loop_current=0,
+            full_loop_total=0,
+            full_loop_last_update=0.0,
+            quick_loop_current=0,
+            quick_loop_total=0,
+            quick_loop_last_update=0.0,
             backend_start_time=time.time()
         ))
         session.commit()
@@ -129,6 +148,12 @@ def _ensure_metrics_record(network: NetworkType) -> None:
                 last_loop_end_time=0.0,
                 current_loop_queue=0,
                 last_loop_queue=0,
+                full_loop_current=0,
+                full_loop_total=0,
+                full_loop_last_update=0.0,
+                quick_loop_current=0,
+                quick_loop_total=0,
+                quick_loop_last_update=0.0,
                 backend_start_time=time.time()
             ))
             session.commit()
@@ -194,6 +219,32 @@ def record_loop_end(users_processed: int, network: NetworkType | None = None) ->
             session.commit()
 
 
+def _queue_progress(current: int, total: int, last_update: float) -> dict:
+    """Progress through one queue rotation as a serializable dict."""
+    percent = (current / total * 100) if total > 0 else 0
+    return {
+        'processed': current,
+        'total': total,
+        'last_update': last_update or 0,
+        'percent': round(min(100, max(0, percent)), 1),
+    }
+
+
+def _progress_dict(record) -> dict:
+    """Progress through both queue rotations (full sweep + quick sweep)."""
+    return {
+        'full': _queue_progress(record.full_loop_current, record.full_loop_total, record.full_loop_last_update),
+        'quick': _queue_progress(record.quick_loop_current, record.quick_loop_total, record.quick_loop_last_update),
+    }
+
+
+def _progress_dict_instance(metrics: BackendMetrics) -> dict:
+    return {
+        'full': _queue_progress(metrics.full_loop_current, metrics.full_loop_total, metrics.full_loop_last_update),
+        'quick': _queue_progress(metrics.quick_loop_current, metrics.quick_loop_total, metrics.quick_loop_last_update),
+    }
+
+
 def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
     """Return backend metrics as a dictionary, or None if no valid record exists."""
     from database import BackendMetrics as DBBackendMetrics
@@ -208,7 +259,8 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
             'current_loop_queue': metrics.current_loop_queue,
             'last_loop_queue': metrics.last_loop_queue,
             'loop_counter': metrics.loop_counter,
-            'network_status': metrics.network_status
+            'network_status': metrics.network_status,
+            'progress': _progress_dict_instance(metrics)
         }
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
@@ -225,9 +277,177 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
                 'current_loop_queue': record.current_loop_queue,
                 'last_loop_queue': record.last_loop_queue,
                 'loop_counter': record.loop_counter,
-                'network_status': record.network_status
+                'network_status': record.network_status,
+                'progress': _progress_dict(record)
             }
         return None
+
+
+def _shared_session():
+    """Return the metrics module's shared database session.
+
+    Works both under Flask-SQLAlchemy (`db.session` is a callable scoped
+    session) and the backend's thin wrapper (`db.session()` returns the one
+    session the backend reuses all loop long).
+    """
+    session = db.session() if callable(db.session) else db.session
+    return session
+
+
+_PROGRESS_MODES = ('full', 'quick')
+
+
+def _progress_columns(mode: str, current: int, total: int, now: float) -> dict:
+    """Column names + values for the queue being processed, by mode."""
+    return {
+        f'{mode}_loop_current': current,
+        f'{mode}_loop_total': total,
+        f'{mode}_loop_last_update': now,
+    }
+
+
+def _persist_loop_progress(mode: str, current: int, total: int, network: NetworkType, commit: bool = False) -> None:
+    """Write progress through one queue rotation for a network to the database."""
+    
+    from database import BackendMetrics as DBBackendMetrics
+    session = _shared_session()
+    session.execute(
+        update(DBBackendMetrics)
+        .where(DBBackendMetrics.network == network)
+        .values(**_progress_columns(mode, current, total, time.time()))
+    )
+    if commit:
+        session.commit()
+    _last_progress_persist[(network, mode)] = time.time()
+
+
+def begin_loop_progress(total: int, network: NetworkType | None = None, mode: str = 'quick') -> None:
+    """Reset progress for a queue rotation once its roster is known.
+
+    Called between loops, before any batch work starts, so committing here is
+    safe (there is no pending transaction yet).
+    """
+    if network is None or mode not in _PROGRESS_MODES:
+        return
+    _loop_progress_state[network] = {'current': 0, 'total': total, 'mode': mode}
+    _persist_loop_progress(mode, 0, total, network, commit=True)
+
+
+def advance_loop_progress(network: NetworkType | None = None, amount: int = 1) -> None:
+    """Advance the active queue rotation's progress as consoles are processed.
+
+    Persists on completion, otherwise throttled to reduce writes. The write
+    lives in the backend's in-flight transaction and becomes visible when that
+    transaction commits (per-batch), so no `commit` is issued here.
+    """
+    if network is None:
+        return
+    state = _loop_progress_state.get(network)
+    if state is None:
+        return
+    state['current'] = min(state['total'], state['current'] + amount)
+    now = time.time()
+    if state['current'] >= state['total'] or now - _last_progress_persist.get((network, state['mode']), 0.0) >= _PROGRESS_PERSIST_INTERVAL:
+        _persist_loop_progress(state['mode'], state['current'], state['total'], network)
+
+
+def is_backend_online(metrics: dict | None) -> bool:
+    """True if the backend is up and recently heartbeated for a network."""
+    if not metrics or metrics.get('network_status') == 'down':
+        return False
+    last_seen = metrics.get('last_seen', 0) or 0
+    return time.time() - last_seen < HEARTBEAT_THRESHOLD
+
+
+def build_public_status() -> dict:
+    """Sanitized, login-free snapshot used by the status page and /api/status."""
+    def summarize(network: NetworkType, label: str) -> dict:
+        metrics = get_backend_metrics(network)
+        tracked = db.session.query(
+            func.count()
+        ).filter(Friend.network == network).scalar() or 0
+        return {
+            'name': label,
+            'online': is_backend_online(metrics),
+            'network_status': (metrics or {}).get('network_status', 'up'),
+            'uptime_seconds': (metrics or {}).get('uptime_seconds', 0),
+            'last_seen': (metrics or {}).get('last_seen', 0),
+            'last_loop_duration_seconds': (metrics or {}).get('last_loop_duration_seconds'),
+            'average_loop_time_seconds': (metrics or {}).get('average_loop_time_seconds', 0),
+            'loop_counter': (metrics or {}).get('loop_counter', 0),
+            'tracked': tracked,
+            'progress': (metrics or {}).get('progress', {
+                'full': _queue_progress(0, 0, 0),
+                'quick': _queue_progress(0, 0, 0),
+            }),
+        }
+
+    nintendo = summarize(NetworkType.NINTENDO, 'Nintendo')
+    pretendo = summarize(NetworkType.PRETENDO, 'Pretendo')
+
+    if nintendo['online'] and pretendo['online']:
+        status = 'Operational'
+    elif nintendo['online'] or pretendo['online']:
+        status = 'Semi-Operational'
+    else:
+        status = 'Offline'
+
+    return {
+        'status': status,
+        'timestamp': time.time(),
+        'networks': {
+            'nintendo': nintendo,
+            'pretendo': pretendo,
+        },
+        'heartbeat_threshold_seconds': HEARTBEAT_THRESHOLD,
+    }
+
+
+# The status page (and the nav every page renders) only need a periodic snapshot.
+# Building it runs several DB queries, so a background task refreshes it and the
+# request handlers serve these cached copies without ever touching the database.
+PUBLIC_STATUS_REFRESH_INTERVAL = 5  # seconds
+_public_status_cache: dict | None = None
+_network_metrics_cache: dict = {}
+_status_cache_lock = threading.Lock()
+
+
+def refresh_status_cache() -> None:
+    """Rebuild the cached public status and per-network metric snapshots.
+
+    Must be called within a Flask application context (it queries the DB).
+    """
+    public = build_public_status()
+    networks = {}
+    for key, network in (('nintendo', NetworkType.NINTENDO), ('pretendo', NetworkType.PRETENDO)):
+        entry = public['networks'].get(key, {})
+        networks[network] = {
+            'uptime_seconds': entry.get('uptime_seconds', 0),
+            'last_seen': entry.get('last_seen', 0),
+            'network_status': entry.get('network_status', 'up'),
+        }
+
+    global _public_status_cache
+    with _status_cache_lock:
+        _public_status_cache = public
+        _network_metrics_cache.clear()
+        _network_metrics_cache.update(networks)
+
+
+def get_public_status() -> dict:
+    """Return the cached public status snapshot, building it once if needed."""
+    cached = _public_status_cache
+    if cached is None:
+        refresh_status_cache()
+        cached = _public_status_cache
+    return cached
+
+
+def get_cached_network_metrics(network: NetworkType) -> dict | None:
+    """Return the cached backend metric subset the nav/status pill needs."""
+    if _public_status_cache is None:
+        refresh_status_cache()
+    return _network_metrics_cache.get(network)
 
 
 def get_network_stats() -> dict:
@@ -296,3 +516,9 @@ def get_metrics():
         },
         'timestamp': time.time()
     }), 200
+
+
+@metrics_bp.route('/api/status/', methods=['GET'])
+def api_status():
+    """Public status snapshot (no API key required) for the status page."""
+    return jsonify(get_public_status()), 200
