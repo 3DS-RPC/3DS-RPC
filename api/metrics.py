@@ -92,6 +92,7 @@ def reset_metrics(network: NetworkType) -> None:
             total_loop_time=0.0,
             last_loop_start_time=0.0,
             last_loop_end_time=0.0,
+            last_loop_duration=0.0,
             current_loop_queue=0,
             last_loop_queue=0,
             full_loop_current=0,
@@ -204,6 +205,7 @@ def record_loop_end(users_processed: int, network: NetworkType | None = None) ->
         if record:
             loop_duration = time.time() - record.last_loop_start_time
             record.last_loop_end_time = time.time()
+            record.last_loop_duration = loop_duration
             record.loop_counter += 1
             record.total_users_processed = users_processed
             record.total_loop_time += loop_duration
@@ -265,7 +267,6 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record and record.backend_start_time > 0:
-            duration = record.last_loop_end_time - record.last_loop_start_time if record.last_loop_end_time > 0 else None
             uptime = time.time() - record.backend_start_time
             return {
                 'uptime_seconds': uptime,
@@ -273,7 +274,7 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
                 'total_users_processed': record.total_users_processed,
                 'total_loop_time_seconds': record.total_loop_time,
                 'average_loop_time_seconds': record.total_loop_time / record.loop_counter if record.loop_counter > 0 else 0.0,
-                'last_loop_duration_seconds': max(0, duration) if duration is not None else None,
+                'last_loop_duration_seconds': record.last_loop_duration if record.last_loop_duration > 0 else None,
                 'current_loop_queue': record.current_loop_queue,
                 'last_loop_queue': record.last_loop_queue,
                 'loop_counter': record.loop_counter,
