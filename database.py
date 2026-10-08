@@ -54,6 +54,11 @@ class Friend(Base):
     game_description: Mapped[Optional[str]]
     last_online: Mapped[int] = mapped_column("last_online", BigInteger(), nullable=False)
     favorite_game: Mapped[int] = mapped_column("favorite_game", BigInteger(), nullable=False)
+    refresh_requested: Mapped[bool] = mapped_column("refresh_requested", nullable=False, default=False)
+    last_refresh: Mapped[int] = mapped_column("last_refresh", BigInteger(), nullable=False, default=0)
+    # Unix time the backend last processed this console (presence poll). Unlike
+    # `last_accessed`, this advances every loop so the UI can show freshness.
+    last_updated: Mapped[int] = mapped_column("last_updated", BigInteger(), nullable=False, default=0)
 
 
 class BackendMetrics(Base):
@@ -65,8 +70,15 @@ class BackendMetrics(Base):
     total_loop_time: Mapped[float] = mapped_column("total_loop_time", nullable=False, default=0.0)
     last_loop_start_time: Mapped[float] = mapped_column("last_loop_start_time", nullable=False, default=0.0)
     last_loop_end_time: Mapped[float] = mapped_column("last_loop_end_time", nullable=False, default=0.0)
+    last_loop_duration: Mapped[float] = mapped_column("last_loop_duration", nullable=False, default=0.0)
     current_loop_queue: Mapped[int] = mapped_column("current_loop_queue", Integer(), nullable=False, default=0)
     last_loop_queue: Mapped[int] = mapped_column("last_loop_queue", Integer(), nullable=False, default=0)
+    full_loop_current: Mapped[int] = mapped_column("full_loop_current", Integer(), nullable=False, default=0)
+    full_loop_total: Mapped[int] = mapped_column("full_loop_total", Integer(), nullable=False, default=0)
+    full_loop_last_update: Mapped[float] = mapped_column("full_loop_last_update", nullable=False, default=0.0)
+    quick_loop_current: Mapped[int] = mapped_column("quick_loop_current", Integer(), nullable=False, default=0)
+    quick_loop_total: Mapped[int] = mapped_column("quick_loop_total", Integer(), nullable=False, default=0)
+    quick_loop_last_update: Mapped[float] = mapped_column("quick_loop_last_update", nullable=False, default=0.0)
     backend_start_time: Mapped[float] = mapped_column("backend_start_time", nullable=False, default=0.0)
     network_status: Mapped[str] = mapped_column("network_status", String(16), nullable=False, default='up')
 
@@ -78,6 +90,11 @@ class DiscordFriends(Base):
     friend_code: Mapped[str] = mapped_column("friend_code", primary_key=True, nullable=False)
     network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue())
     active: Mapped[bool]
+    # Console health marker (ok/degraded/error) from the backend's user loop.
+    # health_reason stores a short code resolved via api.health.HEALTH_REASONS.
+    health: Mapped[str] = mapped_column("health", String(16), nullable=False, default='ok')
+    health_reason: Mapped[Optional[str]] = mapped_column("health_reason", String(32))
+    health_updated: Mapped[int] = mapped_column("health_updated", BigInteger(), nullable=False, default=0)
 
 
 class Discord(Base):

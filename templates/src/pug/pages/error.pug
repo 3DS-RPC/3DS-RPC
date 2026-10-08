@@ -1,0 +1,37 @@
+extends ../layouts/dashboard.pug
+
+block config
+    - var bodyClass = 'sb-nav-fixed'
+    - var pageTitle = "Error"
+    - var sidenavStyle = 'sb-sidenav-dark'
+
+block content
+    .container-fluid.px-4
+        style.
+            .error-icon {
+                width: 72px;
+                height: 72px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.75rem;
+                color: #fff;
+                background-color: #FC8C2C;
+            }
+        .row.justify-content-center
+            .col-lg-6
+                .card.app-card.shadow-lg.border-0.text-center.mt-5
+                    .card-body.p-5
+                        .error-icon.mx-auto.mb-3
+                            i.fas.fa-triangle-exclamation
+                        h3.mb-2 {{ data['title'] }}
+                        p.text-muted.mb-4 {{ data['message'] }}
+                        html {% if data['reauth'] %}
+                        a.btn.btn-primary.d-inline-flex.align-items-center.gap-2.me-2(style = 'background-color:#7289da;border-width:0px;' href='/connect')
+                            img(src = '{{ url_for("static",filename="assets/img/discord.svg") }}', height = '20px')
+                            | Reconnect Discord
+                        html {% endif %}
+                        a.btn.btn-secondary.d-inline-flex.align-items-center.gap-2(href='/')
+                            i.fas.fa-arrow-left
+                            | Return to Home

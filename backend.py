@@ -44,13 +44,36 @@ NEW_USER_PRIORITY_WINDOW = 30 * 60  # 30 minutes since account_creation
 # Whether we've already wiped the remote friendlist for this backend run.
 _startup_wipe_done: bool = False
 
-from api.private import NINTENDO_NEX_PASSWORD, NINTENDO_SERIAL_NUMBER, NINTENDO_MAC_ADDRESS, NINTENDO_DEVICE_CERT, NINTENDO_DEVICE_NAME, NINTENDO_REGION, NINTENDO_LANGUAGE, PRETENDO_NEX_PASSWORD, NINTENDO_PID, NINTENDO_PID_HMAC, PRETENDO_SERIAL_NUMBER, PRETENDO_MAC_ADDRESS, PRETENDO_DEVICE_CERT, PRETENDO_DEVICE_NAME, PRETENDO_REGION, PRETENDO_LANGUAGE, PRETENDO_PID, PRETENDO_PID_HMAC
-from api import *
-from api.love2 import *
-from api.networks import NetworkType, InvalidNetworkError
-
 import logging
+
+from api import *
+from api.health import HEALTH_DEGRADED, HEALTH_ERROR, HEALTH_OK, health_reason_label
+from api.love2 import *
+from api.networks import InvalidNetworkError, NetworkType
+from api.private import (
+    NINTENDO_DEVICE_CERT,
+    NINTENDO_DEVICE_NAME,
+    NINTENDO_LANGUAGE,
+    NINTENDO_MAC_ADDRESS,
+    NINTENDO_NEX_PASSWORD,
+    NINTENDO_PID,
+    NINTENDO_PID_HMAC,
+    NINTENDO_REGION,
+    NINTENDO_SERIAL_NUMBER,
+    PRETENDO_DEVICE_CERT,
+    PRETENDO_DEVICE_NAME,
+    PRETENDO_LANGUAGE,
+    PRETENDO_MAC_ADDRESS,
+    PRETENDO_NEX_PASSWORD,
+    PRETENDO_PID,
+    PRETENDO_PID_HMAC,
+    PRETENDO_REGION,
+    PRETENDO_SERIAL_NUMBER,
+)
+
 logging.basicConfig(level=logging.INFO)
+
+log = logging.getLogger(__name__)
 
 DEBUG = True
 if not DEBUG:
@@ -61,12 +84,22 @@ scrape_only: bool = False
 
 network: NetworkType = NetworkType.NINTENDO
 
-from api.metrics import record_loop_start, record_loop_end, get_backend_metrics, init_db, reset_metrics, update_backend_heartbeat, set_backend_status
-from api.networks import NetworkType
-
 # When a game server (e.g. Pretendo) is down, its NASC endpoint returns an HTML or bare error page instead of a form-encoded response.
 import nintendo.nasc as _nasc
 from anynet import http as _http
+
+from api.metrics import (
+    advance_loop_progress,
+    begin_loop_progress,
+    get_backend_metrics,
+    init_db,
+    record_loop_end,
+    record_loop_start,
+    reset_metrics,
+    set_backend_status,
+    update_backend_heartbeat,
+)
+from api.networks import NetworkType
 
 
 class NASCUnavailableError(Exception):
@@ -112,6 +145,22 @@ def is_network_outage(exc: Exception) -> bool:
 	return isinstance(exc, (OSError, TimeoutError))
 
 
+def set_console_health(session: Session, friend_code: str, network: NetworkType, health: str, reason: Optional[str] = None, log_issue: bool = True) -> None:
+	"""Persist a health marker for a console and log one line when it's not OK."""
+	session.execute(
+		update(DiscordFriends)
+		.where(DiscordFriends.friend_code == friend_code)
+		.where(DiscordFriends.network == network)
+		.values(
+			health=health,
+			health_reason=reason,
+			health_updated=time.time()
+		)
+	)
+	if log_issue and health != HEALTH_OK:
+		log.warning('[HEALTH] %s on %s -> %s: %s', friend_code, network.lower_name(), health, health_reason_label(reason))
+
+
 class QueriedFriend:
 	""" A QueriedFriend holds the friend code, PID, and last access time for a given Friend. """
 
@@ -144,6 +193,8 @@ class QueriedFriend:
 		self.online = given_friend.online
 		self.last_online = given_friend.last_online
 		self.username = given_friend.username
+		self.refresh_requested = given_friend.refresh_requested
+		self.last_refresh = given_friend.last_refresh
 
 
 async def main():
@@ -232,8 +283,13 @@ async def main():
 		users_processed_this_loop = len(current_rotation)
 
 		if not current_rotation:
+			# A quick pass with nobody online still ran; refresh the queue's last-update timestamp.
+			if not is_full_loop:
+				begin_loop_progress(0, network, 'quick')
 			record_loop_end(0, network)
 			continue
+
+		begin_loop_progress(len(current_rotation), network, 'full' if is_full_loop else 'quick')
 
 		outage_detected = False
 
@@ -279,7 +335,10 @@ async def main():
 						friends_client = friends.FriendsClientV1(client)
 
 						# Begin our main loop!
-						await main_friends_loop(friends_client, session, batch, full_loop=is_full_loop)
+						if is_full_loop:
+							await full_queue_sync(friends_client, session, batch)
+						else:
+							await quick_queue(friends_client, session, batch)
 						update_backend_heartbeat(network)
 
 				consecutive_outages = 0
@@ -299,6 +358,11 @@ async def main():
 				update_backend_heartbeat(network)
 				await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
 
+			# Throttle every batch independently (~1s per user in the batch,
+			# clamped to 10-300s) so each 100-user block is paced on its own
+			# and large passes scale instead of hitting one fixed cap.
+			await anyio.sleep(min(300, max(10, len(batch))))
+
 		if scrape_only:
 			print('Done scraping.')
 			break
@@ -306,16 +370,10 @@ async def main():
 		record_loop_end(users_processed_this_loop, network)
 		timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
 		duration = get_backend_metrics(network)["last_loop_duration_seconds"] or 0
-		queue_batch_delay = min(300, max(60, users_processed_this_loop))
-
-		# The delay scales with queue size to prevent overwhelming Pretendo:
-		#   - Minimum delay: 60 seconds (prevents loops from running too fast for small queues)
-		#   - Maximum delay: 300 seconds / 5 minutes (prevents excessive waiting for very large queues)
 		if outage_detected:
-			print(f"[{timestamp}] {network.lower_name()} is down; retrying in {queue_batch_delay}s")
+			print(f"[{timestamp}] {network.lower_name()} is down; retrying next pass")
 		else:
-			print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s, applying delay of {queue_batch_delay}s")
-		await anyio.sleep(queue_batch_delay)
+			print(f"[{timestamp}] Processed {users_processed_this_loop} users in {duration:.2f}s")
 
 
 async def wipe_friends_list(friends_client: friends.FriendsClientV1) -> None:
@@ -376,7 +434,13 @@ def update_strike(friend_code: str, present: bool, full_loop: bool, add_failed: 
 	return True
 
 
-async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend], full_loop: bool):
+async def full_queue_sync(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]) -> None:
+	"""Full-loop batch processing.
+
+	Every OFFLINE_CHECK_INTERVAL loops we process the whole roster. This must
+	reconcile the remote friendlist (add/remove) so presence and profile data
+	stay accurate for every tracked friend.
+	"""
 	# Budget ~6s per user so the full remove+add sync of a Pretendo batch can
 	# complete (the intentional delays alone account for ~4s/user). If the
 	# timeout fired mid-sync, the un-added tail of the batch was wrongly treated
@@ -399,59 +463,108 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 
 		print(f'Processing {len(current_rotation)} users with {timeout / 60:.1f} minutes timeout')
 
-		# Synchronize our current roster of friends.
-		# By bulk syncing friends, we can remove all existing friends,
-		# and then add our new friends with only one call.
-		#
-		# Although both Nintendo and Pretendo currently support
-		# the bulk `sync_friends` RPC call, Pretendo's
-		# implementation is not optimized, and overloads their servers.
-		all_friend_pids: List[int] = [f.pid for f in current_rotation]
-		add_errors: List[tuple] = []
-		if network == NetworkType.PRETENDO:
-			# Clear our current, registered friends.
-			removables = await friends_client.get_all_friends()
-			removed_count: int = 0
-			for friend in removables:
-				await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
-				try:
-					await friends_client.remove_friend_by_principal_id(friend.pid)
-					removed_count += 1
-				except Exception as e:
-					print(f'Failed to remove friend {friend.pid}: {e}')
-
-			print(f'Removed {removed_count}/{len(removables)} friends')
-
-			# Individually add all pending friend PIDs.
-			added_count: int = 0
-			for friend_pid in all_friend_pids:
-				await anyio.sleep(DELAY_TABLE["ADD_FRIEND"])
-				try:
-					await friends_client.add_friend_by_principal_id(0, friend_pid)
-					added_count += 1
-				except Exception as e:
-					add_errors.append((friend_pid, e))
-					print(f'Failed to add friend {friend_pid}: {e}')
-
-			if add_errors:
-				print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
-		else:
-			# We expect the remote NEX implementation to remove all existing
-			# relationships, and replace them with the 100 PIDs specified.
-			# This path is currently only for Nintendo.
-			try:
-				await friends_client.sync_friend(0, all_friend_pids, [])
-			except Exception as e:
-				print(f'Failed to sync friends: {e}')
-			await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
+		add_errors, current_friends_list = await reconcile_friends(friends_client, current_rotation)
 
 	if timeout_scope.cancelled_caught:
 		print(f'Batch timed out after {timeout} seconds')
 	
+	await refresh_friend_states(friends_client, session, current_rotation, add_errors, full_loop=True, current_friends_list=current_friends_list)
+
+
+async def quick_queue(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend]) -> None:
+	"""Quick-loop batch processing for the online-only rotation.
+
+	Compares the remote friendlist against the pids we want to track. If they
+	match 100%, we can skip the add/remove calls entirely and go straight to
+	presence. Only full loops count friend-strikes.
+	"""
+	print(f'Processing {len(current_rotation)} users')
+
+	# Reconcile the remote friendlist against what we want to track. When our
+	# tracked set fits within the 100-friend cap and hasn't changed, the
+	# friendlist already matches, so we skip all add/remove work and go straight
+	# to presence. This avoids clearing and re-adding the same accounts every
+	# loop (which is especially expensive on Pretendo).
+	add_errors, current_friends_list = await reconcile_friends(friends_client, current_rotation)
+
+	await refresh_friend_states(friends_client, session, current_rotation, add_errors, full_loop=False, current_friends_list=current_friends_list)
+
+
+async def reconcile_friends(friends_client: friends.FriendsClientV1, current_rotation: list[QueriedFriend]) -> tuple[List[tuple], Optional[list[friends.FriendRelationship]]]:
+	"""Synchronize the remote friendlist against our current roster.
+
+	By bulk syncing friends, we can remove all existing friends, and then add
+	our new friends with only one call. Although both Nintendo and Pretendo
+	currently support the bulk `sync_friends` RPC call, Pretendo's
+	implementation is not optimized, and overloads their servers.
+	"""
+	all_friend_pids: List[int] = [f.pid for f in current_rotation]
+	add_errors: List[tuple] = []
+
+	current_friends_list = await friends_client.get_all_friends()
+	existing_pids = {friend.pid for friend in current_friends_list}
+	desired_pids = set(all_friend_pids)
+
+	if existing_pids == desired_pids:
+		# Friendlist already matches our tracked set, so no add/remove work is
+		# needed and the fetched list can be reused downstream.
+		return add_errors, current_friends_list
+
+	if network == NetworkType.PRETENDO:
+		# Remove friends we no longer track, add friends that are missing.
+		removed_count: int = 0
+		for friend in current_friends_list:
+			if friend.pid in desired_pids:
+				continue
+			await anyio.sleep(DELAY_TABLE["REMOVE_FRIEND"])
+			try:
+				await friends_client.remove_friend_by_principal_id(friend.pid)
+				removed_count += 1
+			except Exception as e:
+				print(f'Failed to remove friend {friend.pid}: {e}')
+
+		if removed_count:
+			print(f'Removed {removed_count} departed friend(s)')
+
+		added_count: int = 0
+		for friend_pid in all_friend_pids:
+			if friend_pid in existing_pids:
+				continue
+			await anyio.sleep(DELAY_TABLE["ADD_FRIEND"])
+			try:
+				await friends_client.add_friend_by_principal_id(0, friend_pid)
+				added_count += 1
+			except Exception as e:
+				add_errors.append((friend_pid, e))
+				print(f'Failed to add friend {friend_pid}: {e}')
+
+		if added_count or add_errors:
+			print(f'Added {added_count}/{len(all_friend_pids)} friends ({len(add_errors)} errors)')
+	else:
+		# We expect the remote NEX implementation to remove all existing
+		# relationships, and replace them with the 100 PIDs specified.
+		# This path is currently only for Nintendo.
+		try:
+			await friends_client.sync_friend(0, all_friend_pids, [])
+		except Exception as e:
+			print(f'Failed to sync friends: {e}')
+		await anyio.sleep(DELAY_TABLE["SYNC_FRIENDS"])
+
+	return add_errors, None
+
+
+async def refresh_friend_states(friends_client: friends.FriendsClientV1, session: Session, current_rotation: list[QueriedFriend], add_errors: List[tuple], full_loop: bool, current_friends_list: Optional[list[friends.FriendRelationship]] = None) -> None:
+	"""Query the friendlist after sync, then update presence and profiles.
+
+	An empty friendlist is almost certainly an outage or a failed sync, not a
+	mass unfriend. A later successful poll resets the counters.
+	"""
 	await anyio.sleep(DELAY_TABLE["MINIMUM_LOOP"])
 
-	# Query all successful friends.
-	current_friends_list = await friends_client.get_all_friends()
+	# Query all successful friends. A pre-fetched list is reused when the
+	# reconcile left the friendlist untouched, avoiding a redundant RPC.
+	if current_friends_list is None:
+		current_friends_list = await friends_client.get_all_friends()
 	current_friend_pids: List[int] = [f.pid for f in current_friends_list]
 
 	# An empty friendlist is almost certainly an outage or a failed sync, not a
@@ -461,6 +574,19 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 
 	# Determine which remote friends are confirmed present, and which have been
 	# absent long enough to count as having unfriended us.
+	added_friends, unfriended_codes = detect_unfriended(session, current_rotation, current_friend_pids, add_errors, full_loop)
+	if unfriended_codes:
+		print(f'Stopped tracking {len(unfriended_codes)} unfriended users')
+
+	if len(added_friends) == 0:
+		# All of our friends removed us, so there's no more work to be done.
+		return
+
+	await update_presences(friends_client, session, current_friend_pids, rotation_pids={f.pid for f in current_rotation})
+	await update_profiles(friends_client, session, added_friends, current_friends_list)
+
+
+def detect_unfriended(session: Session, current_rotation: list[QueriedFriend], current_friend_pids: List[int], add_errors: List[tuple], full_loop: bool) -> tuple[list[QueriedFriend], List[str]]:
 	added_friends: List[QueriedFriend] = []
 	unfriended_codes: List[str] = []
 	failed_add_pids: set[int] = {pid for pid, _ in add_errors}
@@ -484,17 +610,25 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				.values(active=False)
 			)
 		session.commit()
-		print(f'Stopped tracking {len(unfriended_codes)} unfriended users')
 
-	if len(added_friends) == 0:
-		# All of our friends removed us, so there's no more work to be done.
-		return
+	return added_friends, unfriended_codes
 
+
+async def update_presences(friends_client: friends.FriendsClientV1, session: Session, current_friend_pids: List[int], rotation_pids: Optional[set] = None) -> None:
 	await anyio.sleep(DELAY_TABLE["GET_PRESENCE"])
 
-	# Query the presences of all of our added friends.
-	# Only online users will have their presence returned.
-	tracked_presences = await friends_client.get_friend_presence(current_friend_pids)
+	tracked_presences = None
+	try:
+		tracked_presences = await friends_client.get_friend_presence(current_friend_pids)
+	except Exception:
+		# We couldn't read statuses for this batch; mark the consoles affected
+		# and re-raise so the existing outage handling in the main loop runs.
+		for pid in current_friend_pids:
+			status_code = str(principal_id_to_friend_code(pid)).zfill(12)
+			set_console_health(session, status_code, network, HEALTH_ERROR, 'status_read_failed', log_issue=False)
+		session.commit()
+		log.warning('[HEALTH] status read failed on %s', network.lower_name())
+		raise
 	online_user_pids: List[int] = []
 
 	for game in tracked_presences:
@@ -519,9 +653,14 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 				upd_id=game.presence.game_key.title_version,
 				joinable=joinable,
 				game_description=game_description,
-				last_online=time.time()
+				last_online=time.time(),
+				last_updated=time.time()
 			)
 		)
+		# Only count queue members toward this loop's progress; the presence
+		# response can include friends outside the current rotation.
+		if rotation_pids is None or game.pid in rotation_pids:
+			advance_loop_progress(network)
 
 	# Otherwise, if we have no presence data, this user must be offline.
 	for offline_user in [h for h in current_friend_pids if not h in online_user_pids]:
@@ -533,22 +672,39 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			.values(
 				online=False,
 				title_id=0,
-				upd_id=0
+				upd_id=0,
+				last_updated=time.time()
 			)
 		)
+		if rotation_pids is None or offline_user in rotation_pids:
+			advance_loop_progress(network)
+
+	# Presence was read successfully: mark every processed console healthy as a
+	# baseline. Profile-specific issues in update_profiles override this later.
+	for pid in current_friend_pids:
+		friend_code = str(principal_id_to_friend_code(pid)).zfill(12)
+		set_console_health(session, friend_code, network, HEALTH_OK)
 	session.commit()
 
-	# Lastly, update all added friend comments, usernames, etc.
+
+async def update_profiles(friends_client: friends.FriendsClientV1, session: Session, added_friends: list[QueriedFriend], current_friends_list: list[friends.FriendRelationship]) -> None:
+	"""Scrape persistent info (comment, Mii, username, favorite game) for added friends.
+
+	As this is a time-heavy task, only update if necessary. A friend with no
+	username yet has never had their profile scraped, so fetch it on the first
+	loop they're processed instead of waiting for the `last_accessed` throttle
+	(only the backend's own scrape refreshes `last_accessed`; profile
+	views/polls must not).
+	"""
 	pending_updates: List[dict] = []
 	for current_friend in added_friends:
-		# As this is a time-heavy task, only update if necessary.
-		
-		# A friend with no username yet has never had their profile scraped, so
-		# fetch it on the first loop they're processed instead of waiting for the
-		# last_accessed throttle (which active 3DS polling defeats by refreshing
-		# last_accessed on every request).
 		work: bool = False
-		if time.time() - current_friend.last_accessed >= 600 or scrape_only or current_friend.username is None:
+		# A refresh request is a flag that is honored when this user is next
+		# processed in the queue. The 1-hour cooldown is enforced here (not at
+		# request time) so repeated clicks just keep the flag set until a
+		# refresh is actually due.
+		refresh_eligible = current_friend.refresh_requested and time.time() - current_friend.last_refresh >= 3600
+		if refresh_eligible or time.time() - current_friend.last_accessed >= 600 or scrape_only or current_friend.username is None:
 			work = True
 
 		if not work:
@@ -560,6 +716,7 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 			current_info = await friends_client.get_friend_persistent_info([current_friend.pid,])
 		except Exception as e:
 			print(f'Failed to get persistent info for {current_friend.friend_code}: {e}')
+			set_console_health(session, current_friend.friend_code, network, HEALTH_ERROR, 'info_read_failed')
 			continue
 		comment: str = current_info[0].message
 		favorite_game: int = 0
@@ -587,29 +744,42 @@ async def main_friends_loop(friends_client: friends.FriendsClientV1, session: Se
 
 			# Get user's favorite game
 			favorite_game = current_info[0].game_key.title_id
+			set_console_health(session, current_friend.friend_code, network, HEALTH_OK)
 		else:
 			comment = ''
+			# A comment ending in a space is the 3DS signal that the user asked
+			# us to skip their profile, so we mark the console degraded instead
+			# of scraping their Mii/username.
+			set_console_health(session, current_friend.friend_code, network, HEALTH_DEGRADED, 'comment_space')
 
 		pending_updates.append({
 			'friend_code': current_friend.friend_code,
 			'username': username,
 			'message': comment,
 			'mii': face,
-			'favorite_game': favorite_game
+			'favorite_game': favorite_game,
+			'refresh_eligible': refresh_eligible
 		})
 
 	# Batch commit all updates
 	for upd in pending_updates:
+		values = {
+			'username': upd['username'],
+			'message': upd['message'],
+			'mii': upd['mii'],
+			'favorite_game': upd['favorite_game'],
+			'last_accessed': time.time(),
+		}
+		# Only a flag-triggered refresh consumes the request (and restarts the
+		# cooldown). Normal throttle-based scrapes leave it pending.
+		if upd['refresh_eligible']:
+			values['refresh_requested'] = False
+			values['last_refresh'] = time.time()
 		session.execute(
 			update(Friend)
 			.where(Friend.friend_code == upd['friend_code'])
 			.where(Friend.network == network)
-			.values(
-				username=upd['username'],
-				message=upd['message'],
-				mii=upd['mii'],
-				favorite_game=upd['favorite_game']
-			)
+			.values(**values)
 		)
 	session.commit()
 

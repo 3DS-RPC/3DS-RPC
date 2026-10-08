@@ -1,0 +1,63 @@
+@use "sass:map";
+
+$card-accent: #fc8c2c;
+$card-muted: #8a8a8a;
+
+$mii-gradients: (
+    nintendo: (
+        gradient: linear-gradient(0deg, rgb(255, 198, 147) 0%, rgb(254, 245, 239, 0.1) 100%),
+        accent: rgba(252, 140, 44, .55),
+    ),
+    pretendo: (
+        gradient: linear-gradient(0deg, rgb(196, 160, 250) 0%, rgb(238, 231, 255, 0.1) 100%),
+        accent: rgba(157, 111, 243, .55),
+    ),
+);
+
+.app-card {
+    border: 1px solid rgba(0, 0, 0, .08);
+    border-radius: .75rem;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+}
+
+.app-card .card-header {
+    background-color: #fff;
+    border-bottom: 1px solid rgba(0, 0, 0, .06);
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: $card-muted;
+}
+
+.app-label {
+    display: block;
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: $card-muted;
+    margin-bottom: .4rem;
+}
+
+.app-lift {
+    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+
+.app-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 .5rem 1.25rem rgba(0, 0, 0, .12);
+}
+
+// Mii portrait gradient backdrop and matching card hover
+@each $network, $props in $mii-gradients {
+    .mii-bg-#{$network} {
+        background: map.get($props, gradient);
+    }
+
+    .app-lift:has(.mii-bg-#{$network}):hover {
+        border-color: map.get($props, accent);
+    }
+}

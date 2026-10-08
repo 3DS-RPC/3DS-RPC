@@ -9,6 +9,9 @@
 // within several of our styles below.
 @use "global.scss";
 
+// Components
+@use "cards.scss";
+
 // Layout
 @use "layout/authentication.scss";
 @use "layout/dashboard-default.scss";
