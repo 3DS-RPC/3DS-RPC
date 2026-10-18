@@ -457,7 +457,7 @@ def store_discord_user(user: dict, tokens: dict, token: str) -> None:
 
     discord_user = db.session.scalar(
         select(Discord)
-        .where(Discord.id == user['id'])
+        .where(Discord.id == int(user['id']))
     )
     if discord_user:
         apply(discord_user)
