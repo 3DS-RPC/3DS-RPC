@@ -189,6 +189,10 @@ def record_loop_start(queue_size: int = 0, network: NetworkType | None = None) -
         if record:
             record.last_loop_start_time = time.time()
             record.current_loop_queue = queue_size
+            # Count the loop as it starts, not when it finishes. A full sweep
+            # can take hours under per-batch pacing, so counting on completion
+            # leaves the counter (and the status API) frozen at 0.
+            record.loop_counter += 1
             session.commit()
 
 
@@ -203,21 +207,14 @@ def record_loop_end(users_processed: int, network: NetworkType | None = None) ->
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record:
-            loop_duration = time.time() - record.last_loop_start_time
-            record.last_loop_end_time = time.time()
+            now = time.time()
+            loop_duration = now - record.last_loop_start_time
+            record.last_loop_end_time = now
             record.last_loop_duration = loop_duration
-            record.loop_counter += 1
             record.total_users_processed = users_processed
             record.total_loop_time += loop_duration
             record.last_loop_queue = record.current_loop_queue
             record.current_loop_queue = 0
-            
-            # Reset counters every 10 loops
-            if record.loop_counter >= 10:
-                record.loop_counter = 0
-                record.total_users_processed = 0
-                record.total_loop_time = 0.0
-            
             session.commit()
 
 
@@ -268,12 +265,18 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record and record.backend_start_time > 0:
             uptime = time.time() - record.backend_start_time
+            # `loop_counter` counts loops as they start, so the in-progress
+            # loop hasn't contributed to `total_loop_time` yet. Divide by the
+            # number of loops that have actually finished.
+            in_progress = record.last_loop_start_time > record.last_loop_end_time
+            completed_loops = record.loop_counter - 1 if in_progress else record.loop_counter
+            average_loop_time = record.total_loop_time / completed_loops if completed_loops > 0 else 0.0
             return {
                 'uptime_seconds': uptime,
                 'last_seen': record.last_loop_end_time if record.last_loop_end_time > 0 else record.backend_start_time,
                 'total_users_processed': record.total_users_processed,
                 'total_loop_time_seconds': record.total_loop_time,
-                'average_loop_time_seconds': record.total_loop_time / record.loop_counter if record.loop_counter > 0 else 0.0,
+                'average_loop_time_seconds': average_loop_time,
                 'last_loop_duration_seconds': record.last_loop_duration if record.last_loop_duration > 0 else None,
                 'current_loop_queue': record.current_loop_queue,
                 'last_loop_queue': record.last_loop_queue,

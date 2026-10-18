@@ -230,10 +230,16 @@ async def main():
 		session.expire_all()
 
 		queried_friends = session.scalars(select(Friend).where(Friend.network == network)).all()
+
+		# loop_counter counts loops already started, so read it before
+		# record_loop_start bumps it to decide what this loop should do.
+		loop_number = (get_backend_metrics(network) or {}).get('loop_counter', 0)
+		is_full_loop = loop_number % OFFLINE_CHECK_INTERVAL == 0
+
 		if not queried_friends:
 			record_loop_start(0, network)
 			record_loop_end(0, network)
-			print(f'[{timestamp}] Loop {get_backend_metrics(network)["loop_counter"]}: No friends to process')
+			print(f'[{timestamp}] Loop {loop_number}: No friends to process')
 			continue
 
 		record_loop_start(len(queried_friends), network)
@@ -270,15 +276,13 @@ async def main():
 			else:
 				offline_queue.append(friend)
 		
-		# Determine which queue to process based on loop counter
-		current_metrics = get_backend_metrics(network)
-		is_full_loop = current_metrics["loop_counter"] % OFFLINE_CHECK_INTERVAL == 0
+		# Process the whole roster on full loops, otherwise just the online queue.
 		if is_full_loop:
 			current_rotation = all_friends
-			print(f'[{timestamp}] Loop {current_metrics["loop_counter"]}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
+			print(f'[{timestamp}] Loop {loop_number}: Checking all {len(all_friends)} users (online: {len(online_queue)}, offline: {len(offline_queue)})')
 		else:
 			current_rotation = online_queue
-			print(f'[{timestamp}] Loop {current_metrics["loop_counter"]}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
+			print(f'[{timestamp}] Loop {loop_number}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
 		
 		users_processed_this_loop = len(current_rotation)
 
