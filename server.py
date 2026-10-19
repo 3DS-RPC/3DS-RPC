@@ -317,9 +317,9 @@ def validate_friend_code(friend_code) -> str:
 # Create entry in database with friendCode
 def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
     # Make sure the user isn't trying to create any registered bot friend code.
-    if int(friend_code) == int(PRETENDO_BOT_FC):
+    if int(friend_code) == int(friend_code_to_principal_id(PRETENDO_BOT_FC)):
         raise UserError('invalid FC')
-    if int(friend_code) == int(NINTENDO_BOT_FC):
+    if int(friend_code) == int(friend_code_to_principal_id(NINTENDO_BOT_FC)):
         raise UserError('invalid FC')
 
     # Reject friend codes that fail the 3DS checksum so bad rows never enter the DB.
