@@ -26,6 +26,7 @@ DELAY_TABLE = {
     "GET_PRESENCE": 2,    # Delay before querying presence
     "UPDATE_INFO": 2,     # Delay before getting persistent info
     "MINIMUM_LOOP": 2,    # Minimum delay at end of each loop cycle
+    "EMPTY_QUICK_QUEUE": 5,  # Delay when a quick pass has no online users
 }
 
 # How many consecutive full-loop checks a friend may be absent from the remote friendlist
@@ -91,6 +92,7 @@ from anynet import http as _http
 from api.metrics import (
     advance_loop_progress,
     begin_loop_progress,
+    flush_loop_progress,
     get_backend_metrics,
     init_db,
     record_loop_end,
@@ -291,6 +293,7 @@ async def main():
 			if not is_full_loop:
 				begin_loop_progress(0, network, 'quick')
 			record_loop_end(0, network)
+			time.sleep(DELAY_TABLE["EMPTY_QUICK_QUEUE"])
 			continue
 
 		begin_loop_progress(len(current_rotation), network, 'full' if is_full_loop else 'quick')
@@ -634,6 +637,8 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 		log.warning('[HEALTH] status read failed on %s', network.lower_name())
 		raise
 	online_user_pids: List[int] = []
+	expected_progress = len(rotation_pids) if rotation_pids is not None else len(current_friend_pids)
+	advanced_progress = 0
 
 	for game in tracked_presences:
 		# Set all to offline if scraping
@@ -665,6 +670,7 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 		# response can include friends outside the current rotation.
 		if rotation_pids is None or game.pid in rotation_pids:
 			advance_loop_progress(network)
+			advanced_progress += 1
 
 	# Otherwise, if we have no presence data, this user must be offline.
 	for offline_user in [h for h in current_friend_pids if not h in online_user_pids]:
@@ -682,12 +688,17 @@ async def update_presences(friends_client: friends.FriendsClientV1, session: Ses
 		)
 		if rotation_pids is None or offline_user in rotation_pids:
 			advance_loop_progress(network)
+			advanced_progress += 1
+
+	if advanced_progress < expected_progress:
+		advance_loop_progress(network, expected_progress - advanced_progress)
 
 	# Presence was read successfully: mark every processed console healthy as a
 	# baseline. Profile-specific issues in update_profiles override this later.
 	for pid in current_friend_pids:
 		friend_code = str(principal_id_to_friend_code(pid)).zfill(12)
 		set_console_health(session, friend_code, network, HEALTH_OK)
+	flush_loop_progress(network)
 	session.commit()
 
 

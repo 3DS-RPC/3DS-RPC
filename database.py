@@ -81,6 +81,7 @@ class BackendMetrics(Base):
     quick_loop_last_update: Mapped[float] = mapped_column("quick_loop_last_update", nullable=False, default=0.0)
     backend_start_time: Mapped[float] = mapped_column("backend_start_time", nullable=False, default=0.0)
     network_status: Mapped[str] = mapped_column("network_status", String(16), nullable=False, default='up')
+    loop_mode: Mapped[str] = mapped_column("loop_mode", String(8), nullable=False, default='')
 
 
 class DiscordFriends(Base):

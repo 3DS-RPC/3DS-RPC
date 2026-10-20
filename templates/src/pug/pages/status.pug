@@ -43,6 +43,9 @@ block content
                 flex: 1;
                 height: 1.5rem;
             }
+            .queue-row.is-idle .progress-bar {
+                opacity: .45;
+            }
             .queue-row .queue-ago {
                 min-width: 9rem;
                 text-align: right;
@@ -63,6 +66,7 @@ block content
                     | Live view of the backend queues for each network. Progress advances as
                     | each console is checked, so it reflects how quickly the network can be
                     | iterated right now.
+                    span(id = 'status-cache-age')
 
         html {% for network in ('nintendo', 'pretendo') %}
         .card.shadow-lg.border-0.rounded-lg.mb-3
@@ -71,14 +75,14 @@ block content
                     | {{ network.capitalize() }} Backend
                 span.status-pill.semi(id = '{{ network }}-status') Checking...
             .card-body
-                .queue-row.mb-2
+                .queue-row.mb-2(id = '{{ network }}-full-row')
                     span.queue-label Full Queue
                     .progress
                         .progress-bar(id = '{{ network }}-full-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["full"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["full"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["full"]["total"] }}')
                             span(id = '{{ network }}-full-progress')
                                 | {{ data["service"]["networks"][network]["progress"]["full"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["full"]["total"] }}
                     span.queue-ago(id = '{{ network }}-full-last') Checking...
-                .queue-row.mb-2
+                .queue-row.mb-2(id = '{{ network }}-quick-row')
                     span.queue-label Quick Queue
                     .progress
                         .progress-bar.progress-bar-striped(id = '{{ network }}-quick-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["quick"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["quick"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["quick"]["total"] }}')
@@ -89,7 +93,10 @@ block content
                     span Last heartbeat: <span id='{{ network }}-last-heartbeat'>{{ data["service"]["networks"][network]["last_seen"] }}</span>
                     span Uptime: <span id='{{ network }}-uptime'>{{ data["service"]["networks"][network]["uptime_seconds"] }}</span>
                     span Tracked consoles: <span id='{{ network }}-tracked'>{{ data["service"]["networks"][network]["tracked"] }}</span>
-                    span Last loop: <span id='{{ network }}-last-loop'>{{ data["service"]["networks"][network]["last_loop_duration_seconds"] }}</span>
+                    span
+                        span(id = '{{ network }}-loop-label') Last loop:
+                        span(id = '{{ network }}-last-loop')
+                            | {{ data["service"]["networks"][network]["last_loop_duration_seconds"] }}
         html {% endfor %}
 
         .card.shadow-lg.border-0.rounded-lg.mb-3
@@ -139,15 +146,30 @@ block content
             }
 
             function renderQueue(key, mode, data) {
+                var row = document.getElementById(key + '-' + mode + '-row');
                 var bar = document.getElementById(key + '-' + mode + '-bar');
                 var progress = document.getElementById(key + '-' + mode + '-progress');
                 var last = document.getElementById(key + '-' + mode + '-last');
+                var active = !!data.active;
+                if (row) row.classList.toggle('is-idle', !active);
                 if (bar) bar.style.width = data.percent + '%';
-                if (progress) progress.textContent = data.processed + ' / ' + data.total;
+                if (progress) {
+                    if (!active && !data.last_update) progress.textContent = 'Not run yet';
+                    else progress.textContent = data.processed + ' / ' + data.total + (active ? '' : ' (idle)');
+                }
                 if (last) last.textContent = relativeTime(data.last_update);
             }
 
             function renderStatus(data) {
+                var cacheAge = document.getElementById('status-cache-age');
+                if (cacheAge) {
+                    if (data.stale) {
+                        cacheAge.textContent = ' Status data is stale (' + Math.round(data.cache_age_seconds || 0) + 's old).';
+                    } else if (typeof data.cache_age_seconds === 'number') {
+                        cacheAge.textContent = ' Updated ' + data.cache_age_seconds + 's ago.';
+                    }
+                }
+
                 var networks = data.networks || {};
                 var onlineCount = 0;
                 Object.keys(networks).forEach(function (key) {
@@ -165,8 +187,17 @@ block content
                     if (uptime) uptime.textContent = formatUptime(net.uptime_seconds);
                     var tracked = document.getElementById(key + '-tracked');
                     if (tracked) tracked.textContent = net.tracked;
+                    var loopLabel = document.getElementById(key + '-loop-label');
                     var lastLoop = document.getElementById(key + '-last-loop');
-                    if (lastLoop) lastLoop.textContent = formatDuration(net.last_loop_duration_seconds);
+                    if (loopLabel && lastLoop) {
+                        if (net.loop_mode) {
+                            loopLabel.textContent = 'Current ' + net.loop_mode + ' loop:';
+                            lastLoop.textContent = formatDuration(net.current_loop_elapsed_seconds);
+                        } else {
+                            loopLabel.textContent = 'Last loop:';
+                            lastLoop.textContent = formatDuration(net.last_loop_duration_seconds);
+                        }
+                    }
                 });
 
                 var global = document.getElementById('global-status');

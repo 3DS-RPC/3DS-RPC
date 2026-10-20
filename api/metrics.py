@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 import os
 import threading
 import time
@@ -13,6 +14,8 @@ from api.networks import NetworkType
 from database import Discord, DiscordFriends, Friend
 
 metrics_bp = Blueprint('metrics', __name__)
+
+log = logging.getLogger(__name__)
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'metrics_keys.json')
 
@@ -60,6 +63,7 @@ class BackendMetrics:
     quick_loop_current: int = 0
     quick_loop_total: int = 0
     quick_loop_last_update: float = 0.0
+    loop_mode: str = ''
 
     @property
     def uptime_seconds(self) -> float:
@@ -101,7 +105,8 @@ def reset_metrics(network: NetworkType) -> None:
             quick_loop_current=0,
             quick_loop_total=0,
             quick_loop_last_update=0.0,
-            backend_start_time=time.time()
+            backend_start_time=time.time(),
+            loop_mode=''
         ))
         session.commit()
 
@@ -155,7 +160,8 @@ def _ensure_metrics_record(network: NetworkType) -> None:
                 quick_loop_current=0,
                 quick_loop_total=0,
                 quick_loop_last_update=0.0,
-                backend_start_time=time.time()
+                backend_start_time=time.time(),
+                loop_mode=''
             ))
             session.commit()
 
@@ -215,10 +221,11 @@ def record_loop_end(users_processed: int, network: NetworkType | None = None) ->
             record.total_loop_time += loop_duration
             record.last_loop_queue = record.current_loop_queue
             record.current_loop_queue = 0
+            record.loop_mode = ''
             session.commit()
 
 
-def _queue_progress(current: int, total: int, last_update: float) -> dict:
+def _queue_progress(current: int, total: int, last_update: float, active: bool = False) -> dict:
     """Progress through one queue rotation as a serializable dict."""
     percent = (current / total * 100) if total > 0 else 0
     return {
@@ -226,21 +233,24 @@ def _queue_progress(current: int, total: int, last_update: float) -> dict:
         'total': total,
         'last_update': last_update or 0,
         'percent': round(min(100, max(0, percent)), 1),
+        'active': active,
     }
 
 
 def _progress_dict(record) -> dict:
     """Progress through both queue rotations (full sweep + quick sweep)."""
+    active_mode = record.loop_mode or ''
     return {
-        'full': _queue_progress(record.full_loop_current, record.full_loop_total, record.full_loop_last_update),
-        'quick': _queue_progress(record.quick_loop_current, record.quick_loop_total, record.quick_loop_last_update),
+        'full': _queue_progress(record.full_loop_current, record.full_loop_total, record.full_loop_last_update, active_mode == 'full'),
+        'quick': _queue_progress(record.quick_loop_current, record.quick_loop_total, record.quick_loop_last_update, active_mode == 'quick'),
     }
 
 
 def _progress_dict_instance(metrics: BackendMetrics) -> dict:
+    active_mode = metrics.loop_mode or ''
     return {
-        'full': _queue_progress(metrics.full_loop_current, metrics.full_loop_total, metrics.full_loop_last_update),
-        'quick': _queue_progress(metrics.quick_loop_current, metrics.quick_loop_total, metrics.quick_loop_last_update),
+        'full': _queue_progress(metrics.full_loop_current, metrics.full_loop_total, metrics.full_loop_last_update, active_mode == 'full'),
+        'quick': _queue_progress(metrics.quick_loop_current, metrics.quick_loop_total, metrics.quick_loop_last_update, active_mode == 'quick'),
     }
 
 
@@ -259,18 +269,22 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
             'last_loop_queue': metrics.last_loop_queue,
             'loop_counter': metrics.loop_counter,
             'network_status': metrics.network_status,
+            'loop_mode': metrics.loop_mode or None,
+            'current_loop_elapsed_seconds': None,
             'progress': _progress_dict_instance(metrics)
         }
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record and record.backend_start_time > 0:
-            uptime = time.time() - record.backend_start_time
+            now = time.time()
+            uptime = now - record.backend_start_time
+            in_progress = bool(record.loop_mode)
             # `loop_counter` counts loops as they start, so the in-progress
             # loop hasn't contributed to `total_loop_time` yet. Divide by the
             # number of loops that have actually finished.
-            in_progress = record.last_loop_start_time > record.last_loop_end_time
             completed_loops = record.loop_counter - 1 if in_progress else record.loop_counter
             average_loop_time = record.total_loop_time / completed_loops if completed_loops > 0 else 0.0
+            elapsed = now - record.last_loop_start_time if in_progress and record.last_loop_start_time > 0 else None
             return {
                 'uptime_seconds': uptime,
                 'last_seen': record.last_loop_end_time if record.last_loop_end_time > 0 else record.backend_start_time,
@@ -282,6 +296,8 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
                 'last_loop_queue': record.last_loop_queue,
                 'loop_counter': record.loop_counter,
                 'network_status': record.network_status,
+                'loop_mode': record.loop_mode or None,
+                'current_loop_elapsed_seconds': elapsed,
                 'progress': _progress_dict(record)
             }
         return None
@@ -310,15 +326,18 @@ def _progress_columns(mode: str, current: int, total: int, now: float) -> dict:
     }
 
 
-def _persist_loop_progress(mode: str, current: int, total: int, network: NetworkType, commit: bool = False) -> None:
+def _persist_loop_progress(mode: str, current: int, total: int, network: NetworkType, commit: bool = False, loop_mode: str | None = None) -> None:
     """Write progress through one queue rotation for a network to the database."""
     
     from database import BackendMetrics as DBBackendMetrics
     session = _shared_session()
+    values = _progress_columns(mode, current, total, time.time())
+    if loop_mode is not None:
+        values['loop_mode'] = loop_mode
     session.execute(
         update(DBBackendMetrics)
         .where(DBBackendMetrics.network == network)
-        .values(**_progress_columns(mode, current, total, time.time()))
+        .values(**values)
     )
     if commit:
         session.commit()
@@ -334,7 +353,7 @@ def begin_loop_progress(total: int, network: NetworkType | None = None, mode: st
     if network is None or mode not in _PROGRESS_MODES:
         return
     _loop_progress_state[network] = {'current': 0, 'total': total, 'mode': mode}
-    _persist_loop_progress(mode, 0, total, network, commit=True)
+    _persist_loop_progress(mode, 0, total, network, commit=True, loop_mode=mode)
 
 
 def advance_loop_progress(network: NetworkType | None = None, amount: int = 1) -> None:
@@ -353,6 +372,21 @@ def advance_loop_progress(network: NetworkType | None = None, amount: int = 1) -
     now = time.time()
     if state['current'] >= state['total'] or now - _last_progress_persist.get((network, state['mode']), 0.0) >= _PROGRESS_PERSIST_INTERVAL:
         _persist_loop_progress(state['mode'], state['current'], state['total'], network)
+
+
+def flush_loop_progress(network: NetworkType | None = None) -> None:
+    """Persist the active rotation's exact progress.
+
+    Called at batch boundaries before the backend commits, so the database
+    never shows a count that lags a whole 100-user batch just because the
+    per-advance writes were throttled.
+    """
+    if network is None:
+        return
+    state = _loop_progress_state.get(network)
+    if state is None:
+        return
+    _persist_loop_progress(state['mode'], state['current'], state['total'], network)
 
 
 def is_backend_online(metrics: dict | None) -> bool:
@@ -379,6 +413,8 @@ def build_public_status() -> dict:
             'last_loop_duration_seconds': (metrics or {}).get('last_loop_duration_seconds'),
             'average_loop_time_seconds': (metrics or {}).get('average_loop_time_seconds', 0),
             'loop_counter': (metrics or {}).get('loop_counter', 0),
+            'loop_mode': (metrics or {}).get('loop_mode'),
+            'current_loop_elapsed_seconds': (metrics or {}).get('current_loop_elapsed_seconds'),
             'tracked': tracked,
             'progress': (metrics or {}).get('progress', {
                 'full': _queue_progress(0, 0, 0),
@@ -411,7 +447,13 @@ def build_public_status() -> dict:
 # Building it runs several DB queries, so a background task refreshes it and the
 # request handlers serve these cached copies without ever touching the database.
 PUBLIC_STATUS_REFRESH_INTERVAL = 5  # seconds
+# A snapshot older than this is considered stale: the background refresher is
+# not keeping up (e.g. repeated DB errors), so requests should try to rebuild
+# it themselves instead of serving an arbitrarily old result forever.
+PUBLIC_STATUS_STALE_AFTER = PUBLIC_STATUS_REFRESH_INTERVAL * 3
 _public_status_cache: dict | None = None
+_public_status_built_at: float = 0.0
+_public_status_refresh_attempt_at: float = 0.0
 _network_metrics_cache: dict = {}
 _status_cache_lock = threading.Lock()
 
@@ -431,26 +473,51 @@ def refresh_status_cache() -> None:
             'network_status': entry.get('network_status', 'up'),
         }
 
-    global _public_status_cache
+    global _public_status_cache, _public_status_built_at
     with _status_cache_lock:
         _public_status_cache = public
+        _public_status_built_at = time.time()
         _network_metrics_cache.clear()
         _network_metrics_cache.update(networks)
 
 
-def get_public_status() -> dict:
-    """Return the cached public status snapshot, building it once if needed."""
+def _ensure_status_cache_fresh() -> None:
+    """Build the snapshot if missing, or rebuild it once it has gone stale."""
+    global _public_status_refresh_attempt_at
     cached = _public_status_cache
     if cached is None:
+        # First build: let failures surface (there is no previous value to serve).
         refresh_status_cache()
-        cached = _public_status_cache
-    return cached
+        return
+    now = time.time()
+    if now - _public_status_built_at > PUBLIC_STATUS_STALE_AFTER and now - _public_status_refresh_attempt_at >= PUBLIC_STATUS_REFRESH_INTERVAL:
+        # Don't let every request hammer the DB while refreshes are failing.
+        _public_status_refresh_attempt_at = now
+        try:
+            refresh_status_cache()
+        except Exception:
+            log.exception('Failed to refresh status cache; serving last good snapshot')
+
+
+def get_public_status() -> dict:
+    """Return the cached public status snapshot with its freshness annotated."""
+    _ensure_status_cache_fresh()
+    cached = _public_status_cache
+    if cached is None:
+        raise RuntimeError('Status cache is unavailable')
+
+    # Shallow copy: callers/templates must not mutate the shared snapshot, and
+    # the freshness fields must reflect the current age, not the build time.
+    result = dict(cached)
+    age = round(max(0.0, time.time() - _public_status_built_at), 1)
+    result['cache_age_seconds'] = age
+    result['stale'] = age > PUBLIC_STATUS_STALE_AFTER
+    return result
 
 
 def get_cached_network_metrics(network: NetworkType) -> dict | None:
     """Return the cached backend metric subset the nav/status pill needs."""
-    if _public_status_cache is None:
-        refresh_status_cache()
+    _ensure_status_cache_fresh()
     return _network_metrics_cache.get(network)
 
 
