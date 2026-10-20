@@ -42,6 +42,13 @@ _missing_strikes: dict[tuple, int] = {}
 # OFFLINE_CHECK_INTERVAL loops.
 NEW_USER_PRIORITY_WINDOW = 30 * 60  # 30 minutes since account_creation
 
+from api import private as _private_config
+
+# After a restart, skip consoles whose presence was polled within this many
+# minutes instead of re-checking them immediately. Only applies during the
+# first this-many minutes of uptime. Set to 0 to disable.
+SKIP_RECENT_UPDATES_MINUTES: int = getattr(_private_config, 'SKIP_RECENT_UPDATES_MINUTES', 30)
+
 # Whether we've already wiped the remote friendlist for this backend run.
 _startup_wipe_done: bool = False
 
@@ -184,6 +191,9 @@ class QueriedFriend:
 	# When the user was last seen online
 	last_online: int
 
+	# Unix time the backend last polled this console, per database.
+	last_updated: int
+
 	# The friend's username, per database (None until their profile is scraped).
 	username: Optional[str]
 
@@ -194,6 +204,7 @@ class QueriedFriend:
 		self.account_creation = given_friend.account_creation
 		self.online = given_friend.online
 		self.last_online = given_friend.last_online
+		self.last_updated = given_friend.last_updated
 		self.username = given_friend.username
 		self.refresh_requested = given_friend.refresh_requested
 		self.last_refresh = given_friend.last_refresh
@@ -285,18 +296,41 @@ async def main():
 		else:
 			current_rotation = online_queue
 			print(f'[{timestamp}] Loop {loop_number}: Checking {len(online_queue)} online users (offline: {len(offline_queue)})')
-		
+
+		# Shortly after a restart, don't immediately re-poll consoles that were
+		# already checked just before this process started.
+		skipped_count = 0
+		if SKIP_RECENT_UPDATES_MINUTES > 0:
+			uptime = (get_backend_metrics(network) or {}).get('uptime_seconds', 0.0)
+			if uptime < SKIP_RECENT_UPDATES_MINUTES * 60:
+				cutoff = current_time - SKIP_RECENT_UPDATES_MINUTES * 60
+				recently_updated = [f for f in current_rotation if f.last_updated >= cutoff]
+				if recently_updated:
+					skipped_count = len(recently_updated)
+					current_rotation = [f for f in current_rotation if f.last_updated < cutoff]
+					print(f'[{timestamp}] Restart window: skipping {skipped_count} users updated in the last {SKIP_RECENT_UPDATES_MINUTES} minutes')
+
 		users_processed_this_loop = len(current_rotation)
 
 		if not current_rotation:
 			# A quick pass with nobody online still ran; refresh the queue's last-update timestamp.
 			if not is_full_loop:
-				begin_loop_progress(0, network, 'quick')
+				begin_loop_progress(skipped_count, network, 'quick')
+				if skipped_count:
+					advance_loop_progress(network, skipped_count)
+					flush_loop_progress(network)
+					session.commit()
 			record_loop_end(0, network)
 			time.sleep(DELAY_TABLE["EMPTY_QUICK_QUEUE"])
 			continue
 
-		begin_loop_progress(len(current_rotation), network, 'full' if is_full_loop else 'quick')
+		# Skipped consoles are counted as already processed so the queue total
+		# still reflects the full rotation it started from.
+		begin_loop_progress(len(current_rotation) + skipped_count, network, 'full' if is_full_loop else 'quick')
+		if skipped_count:
+			advance_loop_progress(network, skipped_count)
+			flush_loop_progress(network)
+			session.commit()
 
 		outage_detected = False
 

@@ -76,3 +76,5 @@ HOST:str = ""
 # SQLAlchemy supports many other databases.
 # Refer to https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls for format.
 DB_URL:str = "sqlite:///./sqlite/fcLibrary.db"
+
+SKIP_RECENT_UPDATES_MINUTES:int = 30
