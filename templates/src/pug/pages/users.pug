@@ -40,6 +40,18 @@ block content
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
+            @media (max-width: 575.98px) {
+                .user-tile-media {
+                    min-height: 96px;
+                    padding: .5rem;
+                }
+                .user-tile-mii {
+                    height: 68px;
+                }
+                .user-tile-game {
+                    height: 34px;
+                }
+            }
 
         .row.gy-3
             html {% for i in data['users'] %}

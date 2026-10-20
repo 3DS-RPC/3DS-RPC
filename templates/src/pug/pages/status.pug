@@ -53,8 +53,29 @@ block content
                 color: #6c757d;
             }
             .queue-meta {
+                display: flex;
+                flex-wrap: wrap;
+                gap: .25rem 1rem;
                 font-size: .85rem;
                 color: #6c757d;
+            }
+            @media (max-width: 575.98px) {
+                .queue-row {
+                    flex-wrap: wrap;
+                    gap: .4rem .6rem;
+                }
+                .queue-row .queue-label {
+                    min-width: 0;
+                    flex: 1 1 auto;
+                }
+                .queue-row .progress {
+                    order: 3;
+                    flex: 1 1 100%;
+                }
+                .queue-row .queue-ago {
+                    min-width: 0;
+                    margin-left: auto;
+                }
             }
 
         .card.shadow-lg.border-0.rounded-lg.mb-3

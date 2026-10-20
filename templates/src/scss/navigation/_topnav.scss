@@ -33,3 +33,13 @@
         border-radius: 50%;
     }
 }
+
+// The brand only needs to match the sidenav width when the sidenav is docked.
+// On smaller screens let it shrink so the toggle and account menu stay visible.
+@include media-breakpoint-down(lg) {
+    .sb-topnav {
+        .navbar-brand {
+            width: auto;
+        }
+    }
+}

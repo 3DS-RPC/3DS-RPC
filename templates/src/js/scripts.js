@@ -60,6 +60,21 @@ if (sidebarToggle) {
   });
 }
 
+var layoutContent = document.getElementById('layoutSidenav_content');
+if (layoutContent) {
+  layoutContent.addEventListener('click', function () {
+    if (window.innerWidth < 992 && document.body.classList.contains('sb-sidenav-toggled')) {
+      document.body.classList.remove('sb-sidenav-toggled');
+    }
+  });
+}
+
+window.addEventListener('resize', function () {
+  if (window.innerWidth >= 992) {
+    document.body.classList.remove('sb-sidenav-toggled');
+  }
+});
+
 var nav = document.getElementById('navbarDropdown');
 const token = getCookie('token');
 const user = getCookie('user');
