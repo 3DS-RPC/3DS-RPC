@@ -309,26 +309,28 @@ def cache_titles():
 
 # Validate a friend code and return it normalized to 12 digits.
 def validate_friend_code(friend_code) -> str:
-    fc = str(friend_code).zfill(12)
+    # Users (and consoles) may hand us a code with the usual separators in it,
+    # such as "0148-8844-3745" or "5385 5070 0976", so strip those first.
+    digits = ''.join(filter(str.isdigit, str(friend_code)))
+    if not digits or len(digits) > 12:
+        raise FriendCodeValidityError('an invalid friend code was passed')
+    fc = digits.zfill(12)
     friend_code_to_principal_id(fc)
     return fc
 
 
 # Create entry in database with friendCode
-def create_user(friend_code: int, network: NetworkType, add_new_instance: bool):
-    # Make sure the user isn't trying to create any registered bot friend code.
-    if int(friend_code) == int(friend_code_to_principal_id(PRETENDO_BOT_FC)):
-        raise UserError('invalid FC')
-    if int(friend_code) == int(friend_code_to_principal_id(NINTENDO_BOT_FC)):
-        raise UserError('invalid FC')
-
-    # Reject friend codes that fail the 3DS checksum so bad rows never enter the DB.
+def create_user(friend_code, network: NetworkType, add_new_instance: bool):
+    # Normalize any separators away, and reject friend codes that fail the 3DS
+    # checksum so bad rows never enter the DB.
     try:
-        validate_friend_code(friend_code)
+        friend_code = validate_friend_code(friend_code)
     except FriendCodeValidityError:
-        raise UserError(f'invalid FC: {str(friend_code).zfill(12)}')
+        raise UserError(f'invalid FC: {friend_code}')
 
-    friend_code = str(friend_code).zfill(12)
+    # Make sure the user isn't trying to create any registered bot friend code.
+    if friend_code in (PRETENDO_BOT_FC, NINTENDO_BOT_FC):
+        raise UserError('invalid FC')
 
     # Polling/viewing an existing console never creates a row, and must not
     # touch last_accessed.
