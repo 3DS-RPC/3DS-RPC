@@ -747,16 +747,12 @@ async def update_profiles(friends_client: friends.FriendsClientV1, session: Sess
 	"""
 	pending_updates: List[dict] = []
 	for current_friend in added_friends:
-		work: bool = False
 		# A refresh request is a flag that is honored when this user is next
 		# processed in the queue. The 1-hour cooldown is enforced here (not at
 		# request time) so repeated clicks just keep the flag set until a
 		# refresh is actually due.
 		refresh_eligible = current_friend.refresh_requested and time.time() - current_friend.last_refresh >= 3600
-		if refresh_eligible or time.time() - current_friend.last_accessed >= 600 or scrape_only or current_friend.username is None:
-			work = True
-
-		if not work:
+		if not (refresh_eligible or scrape_only or current_friend.username is None):
 			continue
 
 		await anyio.sleep(DELAY_TABLE["UPDATE_INFO"])
