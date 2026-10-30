@@ -159,7 +159,7 @@ block content
                     div
                         b Consoles
                     div
-                        b Refresh
+                        b Request Mii Update
                     div
                         b Delete
                     div
@@ -186,13 +186,13 @@ block content
                                 a(href = "/user/{{ console['fc'].replace('-', '') }}?network={{ console['network'] }}" style = 'text-decoration: none;')
                                     b {{ console['username'] }}
                             .console-refresh
-                                span.console-cell-label Refresh
+                                span.console-cell-label Request Mii Update
                                 html {% if console['tracked'] %}
                                 a(href = "javascript:refreshCode({{ console['fc'].replace('-', '') }}, '{{ console['network']}}');" style = 'text-decoration: none;')
-                                    b Refresh
+                                    b Request Mii Update
                                 html {% else %}
                                 span.text-muted(style = 'cursor: not-allowed;')
-                                    b Refresh
+                                    b Request Mii Update
                                 html {% endif %}
                             .console-delete
                                 span.console-cell-label Delete
