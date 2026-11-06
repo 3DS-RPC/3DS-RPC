@@ -46,6 +46,11 @@ block content
             .queue-row.is-idle .progress-bar {
                 opacity: .45;
             }
+            .queue-row.is-idle .progress-bar.queue-bar-idle {
+                background-color: #ced4da;
+                color: #495057;
+                opacity: 1;
+            }
             .queue-row .queue-ago {
                 min-width: 9rem;
                 text-align: right;
@@ -96,20 +101,20 @@ block content
                     | {{ network.capitalize() }} Backend
                 span.status-pill.semi(id = '{{ network }}-status') Checking...
             .card-body
-                .queue-row.mb-2(id = '{{ network }}-full-row')
-                    span.queue-label Full Queue
+                .queue-row.mb-2(id = '{{ network }}-slow-row')
+                    span.queue-label Slow Queue
                     .progress
-                        .progress-bar(id = '{{ network }}-full-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["full"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["full"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["full"]["total"] }}')
-                            span(id = '{{ network }}-full-progress')
-                                | {{ data["service"]["networks"][network]["progress"]["full"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["full"]["total"] }}
-                    span.queue-ago(id = '{{ network }}-full-last') Checking...
-                .queue-row.mb-2(id = '{{ network }}-quick-row')
-                    span.queue-label Quick Queue
+                        .progress-bar(id = '{{ network }}-slow-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["slow"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["slow"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["slow"]["total"] }}')
+                            span(id = '{{ network }}-slow-progress')
+                                | {{ data["service"]["networks"][network]["progress"]["slow"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["slow"]["total"] }}
+                    span.queue-ago(id = '{{ network }}-slow-last') Checking...
+                .queue-row.mb-2(id = '{{ network }}-fast-row')
+                    span.queue-label Fast Queue
                     .progress
-                        .progress-bar.progress-bar-striped(id = '{{ network }}-quick-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["quick"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["quick"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["quick"]["total"] }}')
-                            span(id = '{{ network }}-quick-progress')
-                                | {{ data["service"]["networks"][network]["progress"]["quick"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["quick"]["total"] }}
-                    span.queue-ago(id = '{{ network }}-quick-last') Checking...
+                        .progress-bar.progress-bar-striped(id = '{{ network }}-fast-bar', role = 'progressbar', style = 'width: {{ data["service"]["networks"][network]["progress"]["fast"]["percent"] }}%;', aria-valuenow = '{{ data["service"]["networks"][network]["progress"]["fast"]["processed"] }}', aria-valuemin = '0', aria-valuemax = '{{ data["service"]["networks"][network]["progress"]["fast"]["total"] }}')
+                            span(id = '{{ network }}-fast-progress')
+                                | {{ data["service"]["networks"][network]["progress"]["fast"]["processed"] }} / {{ data["service"]["networks"][network]["progress"]["fast"]["total"] }}
+                    span.queue-ago(id = '{{ network }}-fast-last') Checking...
                 .d-flex.flex-wrap.justify-content-between.queue-meta
                     span Last heartbeat: <span id='{{ network }}-last-heartbeat'>{{ data["service"]["networks"][network]["last_seen"] }}</span>
                     span Uptime: <span id='{{ network }}-uptime'>{{ data["service"]["networks"][network]["uptime_seconds"] }}</span>
@@ -124,8 +129,8 @@ block content
             .card-header
                 b About the queues
             .card-body.queue-meta
-                p.mb-2 The <b>Full Queue</b> is every registered console, swept once every 10th loop so the whole roster stays in sync.
-                p.mb-0 The <b>Quick Queue</b> is the online consoles only, checked on the loops in between for lower-latency presence updates.
+                p.mb-2 The <b>Slow Queue</b> is for consoles that are not currently known to be online. They are checked oldest-first, with recently active users preferred and a starvation guard for dormant consoles.
+                p.mb-0 The <b>Fast Queue</b> is for online consoles and newly created accounts. It is checked every couple of minutes.
 
         script.
             function relativeTime(epoch) {
@@ -172,13 +177,23 @@ block content
                 var progress = document.getElementById(key + '-' + mode + '-progress');
                 var last = document.getElementById(key + '-' + mode + '-last');
                 var active = !!data.active;
-                if (row) row.classList.toggle('is-idle', !active);
-                if (bar) bar.style.width = data.percent + '%';
-                if (progress) {
-                    if (!active && !data.last_update) progress.textContent = 'Not run yet';
-                    else progress.textContent = data.processed + ' / ' + data.total + (active ? '' : ' (idle)');
+                var empty = !data.total;
+                if (row) row.classList.toggle('is-idle', !active || empty);
+                if (bar) {
+                    bar.classList.toggle('queue-bar-idle', empty);
+                    bar.style.width = (empty ? 100 : data.percent) + '%';
                 }
-                if (last) last.textContent = relativeTime(data.last_update);
+                if (progress) {
+                    if (empty) {
+                        progress.textContent = 'Idle';
+                    } else {
+                        var suffix = '';
+                        if (data.skipped) suffix += ' · ' + data.skipped + ' skipped';
+                        if (data.failed) suffix += ' · ' + data.failed + ' failed';
+                        progress.textContent = data.processed + ' / ' + data.total + suffix + (active ? '' : ' (idle)');
+                    }
+                }
+                if (last) last.textContent = empty ? 'Idle' : relativeTime(data.last_update);
             }
 
             function renderStatus(data) {
@@ -199,8 +214,8 @@ block content
                     if (net.online) onlineCount++;
 
                     var progress = net.progress || {};
-                    renderQueue(key, 'full', progress.full || { processed: 0, total: 0, percent: 0, last_update: 0 });
-                    renderQueue(key, 'quick', progress.quick || { processed: 0, total: 0, percent: 0, last_update: 0 });
+                    renderQueue(key, 'slow', progress.slow || { processed: 0, total: 0, percent: 0, last_update: 0 });
+                    renderQueue(key, 'fast', progress.fast || { processed: 0, total: 0, percent: 0, last_update: 0 });
 
                     var lastHeartbeat = document.getElementById(key + '-last-heartbeat');
                     if (lastHeartbeat) lastHeartbeat.textContent = relativeTime(net.last_seen);
@@ -212,7 +227,7 @@ block content
                     var lastLoop = document.getElementById(key + '-last-loop');
                     if (loopLabel && lastLoop) {
                         if (net.loop_mode) {
-                            loopLabel.textContent = 'Current ' + net.loop_mode + ' loop:';
+                            loopLabel.textContent = 'Current cycle:';
                             lastLoop.textContent = formatDuration(net.current_loop_elapsed_seconds);
                         } else {
                             loopLabel.textContent = 'Last loop:';

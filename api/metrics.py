@@ -1,23 +1,20 @@
 from __future__ import annotations
-import json
+
+import datetime
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
-from flask import Blueprint, jsonify, request
-from sqlalchemy import case, func, update
+from flask import Blueprint, jsonify
+from sqlalchemy import func, update
 
 from api.networks import NetworkType
-from database import Discord, DiscordFriends, Friend
+from database import Friend
 
 metrics_bp = Blueprint('metrics', __name__)
 
 log = logging.getLogger(__name__)
-
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'metrics_keys.json')
 
 db = None
 
@@ -27,22 +24,15 @@ _PROGRESS_PERSIST_INTERVAL = 1.0
 _loop_progress_state: dict = {}
 _last_progress_persist: dict = {}
 
+# Heartbeats are cheap but frequent; write at most once per interval.
+HEARTBEAT_WRITE_INTERVAL = 60.0
+_last_heartbeat_write: dict = {}
+
 
 def init_db(database_instance):
     """Initialize the metrics module with the SQLAlchemy db instance."""
     global db
     db = database_instance
-
-
-def load_keys() -> list[dict]:
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            return json.load(f)
-    return []
-
-
-def validate_key(key: str) -> bool:
-    return any(k['key'].upper() == key.upper() for k in load_keys())
 
 
 @dataclass
@@ -57,12 +47,16 @@ class BackendMetrics:
     last_loop_queue: int = 0
     loop_counter: int = 0
     network_status: str = 'up'
-    full_loop_current: int = 0
-    full_loop_total: int = 0
-    full_loop_last_update: float = 0.0
-    quick_loop_current: int = 0
-    quick_loop_total: int = 0
-    quick_loop_last_update: float = 0.0
+    fast_loop_current: int = 0
+    fast_loop_total: int = 0
+    fast_loop_skipped: int = 0
+    fast_loop_failed: int = 0
+    fast_loop_last_update: float = 0.0
+    slow_loop_current: int = 0
+    slow_loop_total: int = 0
+    slow_loop_skipped: int = 0
+    slow_loop_failed: int = 0
+    slow_loop_last_update: float = 0.0
     loop_mode: str = ''
 
     @property
@@ -74,7 +68,7 @@ class BackendMetrics:
         return self.total_loop_time / self.loop_counter if self.loop_counter > 0 else 0.0
 
     @property
-    def last_loop_duration(self) -> Optional[float]:
+    def last_loop_duration(self) -> float | None:
         if self.last_loop_start_time > 0:
             return self.last_loop_end_time - self.last_loop_start_time
         return None
@@ -99,29 +93,38 @@ def reset_metrics(network: NetworkType) -> None:
             last_loop_duration=0.0,
             current_loop_queue=0,
             last_loop_queue=0,
-            full_loop_current=0,
-            full_loop_total=0,
-            full_loop_last_update=0.0,
-            quick_loop_current=0,
-            quick_loop_total=0,
-            quick_loop_last_update=0.0,
+            fast_loop_current=0,
+            fast_loop_total=0,
+            fast_loop_skipped=0,
+            fast_loop_failed=0,
+            fast_loop_last_update=0.0,
+            slow_loop_current=0,
+            slow_loop_total=0,
+            slow_loop_skipped=0,
+            slow_loop_failed=0,
+            slow_loop_last_update=0.0,
             backend_start_time=time.time(),
             loop_mode=''
         ))
         session.commit()
+    _last_heartbeat_write.pop(network, None)
 
 
-def update_backend_heartbeat(network: NetworkType) -> None:
-    """Update the last_loop_end_time heartbeat so the frontend doesn't mark us offline."""
+def update_backend_heartbeat(network: NetworkType | None = None, force: bool = False) -> None:
+    """Update the heartbeat timestamp, at most once per interval."""
     from database import BackendMetrics as DBBackendMetrics
-    if db is None:
+    if db is None or network is None:
+        return
+    now = time.time()
+    if not force and now - _last_heartbeat_write.get(network, 0.0) < HEARTBEAT_WRITE_INTERVAL:
         return
     _ensure_metrics_record(network)
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record:
-            record.last_loop_end_time = time.time()
+            record.last_loop_end_time = now
             session.commit()
+    _last_heartbeat_write[network] = now
 
 
 def set_backend_status(network: NetworkType, status: str) -> None:
@@ -154,12 +157,16 @@ def _ensure_metrics_record(network: NetworkType) -> None:
                 last_loop_end_time=0.0,
                 current_loop_queue=0,
                 last_loop_queue=0,
-                full_loop_current=0,
-                full_loop_total=0,
-                full_loop_last_update=0.0,
-                quick_loop_current=0,
-                quick_loop_total=0,
-                quick_loop_last_update=0.0,
+                fast_loop_current=0,
+                fast_loop_total=0,
+                fast_loop_skipped=0,
+                fast_loop_failed=0,
+                fast_loop_last_update=0.0,
+                slow_loop_current=0,
+                slow_loop_total=0,
+                slow_loop_skipped=0,
+                slow_loop_failed=0,
+                slow_loop_last_update=0.0,
                 backend_start_time=time.time(),
                 loop_mode=''
             ))
@@ -171,7 +178,6 @@ _backend_metrics: dict[NetworkType, BackendMetrics] = {}
 
 def get_backend_metrics_instance(network: NetworkType | None = None) -> BackendMetrics:
     """Get or create backend metrics instance for a network."""
-    global _backend_metrics
     if network is None:
         return BackendMetrics()
     if network not in _backend_metrics:
@@ -180,6 +186,11 @@ def get_backend_metrics_instance(network: NetworkType | None = None) -> BackendM
 
 
 backend_metrics = BackendMetrics()
+
+
+def _local_date(timestamp: float) -> datetime.date:
+    """Returns the calendar date for a timestamp in the server's local timezone."""
+    return datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC).astimezone().date()
 
 
 def record_loop_start(queue_size: int = 0, network: NetworkType | None = None) -> None:
@@ -193,7 +204,12 @@ def record_loop_start(queue_size: int = 0, network: NetworkType | None = None) -
     with db.session() as session:
         record = session.query(DBBackendMetrics).filter_by(network=network).first()
         if record:
-            record.last_loop_start_time = time.time()
+            now = time.time()
+            started = record.last_loop_start_time
+            if started and _local_date(started) != _local_date(now):
+                record.loop_counter = 0
+                record.total_loop_time = 0.0
+            record.last_loop_start_time = now
             record.current_loop_queue = queue_size
             # Count the loop as it starts, not when it finishes. A full sweep
             # can take hours under per-batch pacing, so counting on completion
@@ -225,11 +241,15 @@ def record_loop_end(users_processed: int, network: NetworkType | None = None) ->
             session.commit()
 
 
-def _queue_progress(current: int, total: int, last_update: float, active: bool = False) -> dict:
+def _queue_progress(current: int, total: int, last_update: float, active: bool = False, skipped: int = 0, failed: int = 0) -> dict:
     """Progress through one queue rotation as a serializable dict."""
-    percent = (current / total * 100) if total > 0 else 0
+    completed = current + skipped + failed
+    percent = (completed / total * 100) if total > 0 else 0
     return {
         'processed': current,
+        'skipped': skipped,
+        'failed': failed,
+        'completed': completed,
         'total': total,
         'last_update': last_update or 0,
         'percent': round(min(100, max(0, percent)), 1),
@@ -238,19 +258,19 @@ def _queue_progress(current: int, total: int, last_update: float, active: bool =
 
 
 def _progress_dict(record) -> dict:
-    """Progress through both queue rotations (full sweep + quick sweep)."""
+    """Progress through the fast and slow queues."""
     active_mode = record.loop_mode or ''
     return {
-        'full': _queue_progress(record.full_loop_current, record.full_loop_total, record.full_loop_last_update, active_mode == 'full'),
-        'quick': _queue_progress(record.quick_loop_current, record.quick_loop_total, record.quick_loop_last_update, active_mode == 'quick'),
+        'fast': _queue_progress(record.fast_loop_current, record.fast_loop_total, record.fast_loop_last_update, active_mode in ('fast', 'quick', 'mixed'), record.fast_loop_skipped, record.fast_loop_failed),
+        'slow': _queue_progress(record.slow_loop_current, record.slow_loop_total, record.slow_loop_last_update, active_mode in ('slow', 'full', 'mixed'), record.slow_loop_skipped, record.slow_loop_failed),
     }
 
 
 def _progress_dict_instance(metrics: BackendMetrics) -> dict:
     active_mode = metrics.loop_mode or ''
     return {
-        'full': _queue_progress(metrics.full_loop_current, metrics.full_loop_total, metrics.full_loop_last_update, active_mode == 'full'),
-        'quick': _queue_progress(metrics.quick_loop_current, metrics.quick_loop_total, metrics.quick_loop_last_update, active_mode == 'quick'),
+        'fast': _queue_progress(metrics.fast_loop_current, metrics.fast_loop_total, metrics.fast_loop_last_update, active_mode in ('fast', 'quick', 'mixed'), metrics.fast_loop_skipped, metrics.fast_loop_failed),
+        'slow': _queue_progress(metrics.slow_loop_current, metrics.slow_loop_total, metrics.slow_loop_last_update, active_mode in ('slow', 'full', 'mixed'), metrics.slow_loop_skipped, metrics.slow_loop_failed),
     }
 
 
@@ -304,34 +324,34 @@ def get_backend_metrics(network: NetworkType | None = None) -> dict | None:
 
 
 def _shared_session():
-    """Return the metrics module's shared database session.
-
-    Works both under Flask-SQLAlchemy (`db.session` is a callable scoped
-    session) and the backend's thin wrapper (`db.session()` returns the one
-    session the backend reuses all loop long).
-    """
+    """Returns the shared session for both Flask and the backend wrapper."""
     session = db.session() if callable(db.session) else db.session
     return session
 
 
-_PROGRESS_MODES = ('full', 'quick')
+_PROGRESS_LANES = ('fast', 'slow')
 
 
-def _progress_columns(mode: str, current: int, total: int, now: float) -> dict:
-    """Column names + values for the queue being processed, by mode."""
-    return {
-        f'{mode}_loop_current': current,
-        f'{mode}_loop_total': total,
-        f'{mode}_loop_last_update': now,
-    }
+def _new_lane(total: int) -> dict:
+    return {'current': 0, 'total': total, 'skipped': 0, 'failed': 0}
 
 
-def _persist_loop_progress(mode: str, current: int, total: int, network: NetworkType, commit: bool = False, loop_mode: str | None = None) -> None:
-    """Write progress through one queue rotation for a network to the database."""
-    
+def _lane_complete(lane: dict) -> bool:
+    return lane['current'] + lane['skipped'] + lane['failed'] >= lane['total']
+
+
+def _persist_loop_progress(lane_name: str, lane: dict, network: NetworkType, commit: bool = False, loop_mode: str | None = None) -> None:
+    """Write one lane's progress for a network to the database."""
     from database import BackendMetrics as DBBackendMetrics
     session = _shared_session()
-    values = _progress_columns(mode, current, total, time.time())
+    now = time.time()
+    values = {
+        f'{lane_name}_loop_current': lane['current'],
+        f'{lane_name}_loop_total': lane['total'],
+        f'{lane_name}_loop_skipped': lane['skipped'],
+        f'{lane_name}_loop_failed': lane['failed'],
+        f'{lane_name}_loop_last_update': now,
+    }
     if loop_mode is not None:
         values['loop_mode'] = loop_mode
     session.execute(
@@ -341,52 +361,81 @@ def _persist_loop_progress(mode: str, current: int, total: int, network: Network
     )
     if commit:
         session.commit()
-    _last_progress_persist[(network, mode)] = time.time()
+    _last_progress_persist[(network, lane_name)] = now
 
 
-def begin_loop_progress(total: int, network: NetworkType | None = None, mode: str = 'quick') -> None:
-    """Reset progress for a queue rotation once its roster is known.
-
-    Called between loops, before any batch work starts, so committing here is
-    safe (there is no pending transaction yet).
-    """
-    if network is None or mode not in _PROGRESS_MODES:
-        return
-    _loop_progress_state[network] = {'current': 0, 'total': total, 'mode': mode}
-    _persist_loop_progress(mode, 0, total, network, commit=True, loop_mode=mode)
-
-
-def advance_loop_progress(network: NetworkType | None = None, amount: int = 1) -> None:
-    """Advance the active queue rotation's progress as consoles are processed.
-
-    Persists on completion, otherwise throttled to reduce writes. The write
-    lives in the backend's in-flight transaction and becomes visible when that
-    transaction commits (per-batch), so no `commit` is issued here.
-    """
+def begin_cycle_progress(fast_total: int, slow_total: int, network: NetworkType | None = None) -> None:
+    """Reset progress for both lanes once this cycle's poll set is known."""
     if network is None:
+        return
+    lanes = {
+        'fast': _new_lane(fast_total),
+        'slow': _new_lane(slow_total),
+    }
+    if fast_total and slow_total:
+        mode = 'mixed'
+    elif fast_total:
+        mode = 'fast'
+    else:
+        mode = 'slow'
+    _loop_progress_state[network] = {'lanes': lanes, 'mode': mode}
+    _persist_loop_progress('fast', lanes['fast'], network)
+    _persist_loop_progress('slow', lanes['slow'], network, commit=True, loop_mode=mode)
+
+
+def _select_lane(state: dict, mode: str | None) -> tuple[str, dict] | None:
+    lanes = state['lanes']
+    if mode is None:
+        mode = 'fast' if not _lane_complete(lanes['fast']) else 'slow'
+    lane = lanes.get(mode)
+    return (mode, lane) if lane is not None else None
+
+
+def _bump_progress(network: NetworkType | None, field: str, amount: int, mode: str | None) -> None:
+    if network is None or amount <= 0:
         return
     state = _loop_progress_state.get(network)
     if state is None:
         return
-    state['current'] = min(state['total'], state['current'] + amount)
+    selected = _select_lane(state, mode)
+    if selected is None:
+        return
+    mode, lane = selected
+    if field == 'current':
+        lane['current'] = min(lane['total'] - lane['skipped'] - lane['failed'], lane['current'] + amount)
+    else:
+        remaining = max(0, lane['total'] - lane['current'] - lane['failed'] if field == 'skipped' else lane['total'] - lane['current'] - lane['skipped'])
+        lane[field] = min(remaining, lane[field] + amount)
+
     now = time.time()
-    if state['current'] >= state['total'] or now - _last_progress_persist.get((network, state['mode']), 0.0) >= _PROGRESS_PERSIST_INTERVAL:
-        _persist_loop_progress(state['mode'], state['current'], state['total'], network)
+    if _lane_complete(lane) or now - _last_progress_persist.get((network, mode), 0.0) >= _PROGRESS_PERSIST_INTERVAL:
+        _persist_loop_progress(mode, lane, network)
+
+
+def advance_loop_progress(network: NetworkType | None = None, amount: int = 1, mode: str | None = None) -> None:
+    """Advance one lane's processed count."""
+    _bump_progress(network, 'current', amount, mode)
+
+
+def skip_loop_progress(network: NetworkType | None = None, amount: int = 1, mode: str | None = None) -> None:
+    """Count users that could not be polled, e.g. a failed friend add."""
+    _bump_progress(network, 'skipped', amount, mode)
+
+
+def fail_loop_progress(network: NetworkType | None = None, amount: int = 1, mode: str | None = None) -> None:
+    """Count users whose poll failed without aborting the cycle."""
+    _bump_progress(network, 'failed', amount, mode)
 
 
 def flush_loop_progress(network: NetworkType | None = None) -> None:
-    """Persist the active rotation's exact progress.
-
-    Called at batch boundaries before the backend commits, so the database
-    never shows a count that lags a whole 100-user batch just because the
-    per-advance writes were throttled.
-    """
+    """Persist both lanes' exact progress before the caller commits."""
     if network is None:
         return
     state = _loop_progress_state.get(network)
     if state is None:
         return
-    _persist_loop_progress(state['mode'], state['current'], state['total'], network)
+    for lane_name in _PROGRESS_LANES:
+        _persist_loop_progress(lane_name, state['lanes'][lane_name], network)
 
 
 def is_backend_online(metrics: dict | None) -> bool:
@@ -417,8 +466,8 @@ def build_public_status() -> dict:
             'current_loop_elapsed_seconds': (metrics or {}).get('current_loop_elapsed_seconds'),
             'tracked': tracked,
             'progress': (metrics or {}).get('progress', {
-                'full': _queue_progress(0, 0, 0),
-                'quick': _queue_progress(0, 0, 0),
+                'fast': _queue_progress(0, 0, 0),
+                'slow': _queue_progress(0, 0, 0),
             }),
         }
 
@@ -519,74 +568,6 @@ def get_cached_network_metrics(network: NetworkType) -> dict | None:
     """Return the cached backend metric subset the nav/status pill needs."""
     _ensure_status_cache_fresh()
     return _network_metrics_cache.get(network)
-
-
-def get_network_stats() -> dict:
-    """Get online/offline counts per network."""
-    # Single query with conditional aggregation
-    result = db.session.query(
-        Friend.network,
-        func.count().label('total'),
-        func.sum(case((Friend.online == True, 1), else_=0)).label('online')
-    ).group_by(Friend.network).all()
-
-    stats: dict[NetworkType, dict] = {}
-    for row in result:
-        total = row.total or 0
-        online = row.online or 0
-        stats[row.network] = {
-            'total': total,
-            'online': online,
-            'offline': total - online
-        }
-
-    return {
-        'nintendo': stats.get(NetworkType.NINTENDO, {'total': 0, 'online': 0, 'offline': 0}),
-        'pretendo': stats.get(NetworkType.PRETENDO, {'total': 0, 'online': 0, 'offline': 0})
-    }
-
-
-@metrics_bp.route('/api/metrics/', methods=['GET'])
-def get_metrics():
-    api_key = request.headers.get('X-API-KEY') or request.args.get('api_key')
-    if not api_key or not validate_key(api_key):
-        return {'error': 'API key required'}, 401
-
-    # Single query for friend stats
-    friend_stats = db.session.query(
-        func.count().label('total'),
-        func.sum(case((Friend.online.is_(True), 1), else_=0)).label('online')
-    ).first()
-
-    total_friends = friend_stats.total if friend_stats else 0
-    online_friends = friend_stats.online if friend_stats else 0
-    offline_friends = total_friends - online_friends
-
-    # Single query for Discord stats
-    discord_stats = db.session.query(
-        func.count().label('total_users'),
-        func.sum(case((DiscordFriends.active.is_(True), 1), else_=0)).label('active')
-    ).first()
-
-    total_discord_users = discord_stats.total_users if discord_stats else 0
-    active_discord_connections = discord_stats.active if discord_stats else 0
-
-    nintendo_metrics = get_backend_metrics(NetworkType.NINTENDO)
-    pretendo_metrics = get_backend_metrics(NetworkType.PRETENDO)
-
-    return jsonify({
-        'total_friends': total_friends,
-        'online_friends': online_friends,
-        'offline_friends': offline_friends,
-        'total_discord_users': total_discord_users,
-        'active_discord_connections': active_discord_connections,
-        'networks': get_network_stats(),
-        'backend': {
-            'nintendo': nintendo_metrics,
-            'pretendo': pretendo_metrics
-        },
-        'timestamp': time.time()
-    }), 200
 
 
 @metrics_bp.route('/api/status/', methods=['GET'])

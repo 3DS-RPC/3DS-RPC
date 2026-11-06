@@ -1,22 +1,40 @@
 # Created by Deltaion Lee (MCMi460) on Github
-from flask import Flask, make_response, request, redirect, render_template, send_file
+import datetime
+import math
+import os
+import pickle
+import secrets
+import sys
+import threading
+import time
+from urllib.parse import quote, urlencode
+
+import xmltodict
+from flask import Flask, make_response, redirect, render_template, request, send_file
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.middleware.proxy_fix import ProxyFix
-import sys, datetime, xmltodict, pickle, secrets, os, time, threading
-from urllib.parse import urlencode, quote
-
-from sqlalchemy import select, update, insert, delete
+from sqlalchemy import delete, insert, inspect, select, update
 from sqlalchemy.exc import IntegrityError
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-from api.love2 import *
-from api.private import CLIENT_ID, CLIENT_SECRET, HOST, DISCORD_SCOPE
-from api.public import PRETENDO_BOT_FC, NINTENDO_BOT_FC
-from api.networks import NetworkType, name_to_network_type
+from api.eta import (
+    ETA_REFRESH_INTERVAL_SECONDS,
+    estimate_next_polls,
+    format_eta,
+    get_cache_generated_at,
+    get_cached_etas,
+    refresh_cache,
+)
 from api.health import health_reason_label
+from api.love2 import *
 from api.metrics import init_db
+from api.networks import NetworkType, name_to_network_type
+from api.private import CLIENT_ID, CLIENT_SECRET, DISCORD_SCOPE, HOST
+from api.public import NINTENDO_BOT_FC, PRETENDO_BOT_FC
+from api.scheduler import forget_friend
+from api.settings import refresh_available, refresh_remaining
 from database import *
 
 
@@ -27,7 +45,7 @@ class UserError(Exception):
     replaced with a generic message so internals never leak.
     """
 
-    pass  # Marker exception: intentionally does nothing here.
+    # Marker exception: intentionally does nothing here.
 
 
 app = Flask(__name__)
@@ -57,11 +75,11 @@ migrate = Migrate(app, db, target_metadata=Base.metadata)
 
 
 def ensure_db_migrations():
-    """Apply any pending Alembic migrations before the app touches the DB."""
+    """Applies pending migrations, or creates a fresh schema at head."""
     from alembic.config import Config as AlembicConfig
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
-    from flask_migrate import upgrade
+    from flask_migrate import stamp, upgrade
 
     migrations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migrations')
     config = AlembicConfig(os.path.join(migrations_dir, 'alembic.ini'))
@@ -72,6 +90,14 @@ def ensure_db_migrations():
 
     with app.app_context():
         engine = db.engine
+        existing_tables = set(inspect(engine).get_table_names())
+
+        if 'friends' not in existing_tables:
+            Base.metadata.create_all(engine)
+            stamp(directory=migrations_dir, revision=head)
+            print('[DB] Created initial schema at head.')
+            return
+
         with engine.connect() as conn:
             current = MigrationContext.configure(conn).get_current_revision()
 
@@ -84,6 +110,33 @@ def ensure_db_migrations():
 
 
 ensure_db_migrations()
+
+
+_eta_cache_started = False
+_eta_cache_lock = threading.Lock()
+
+
+def _eta_cache_loop():
+    while True:
+        try:
+            with app.app_context():
+                refresh_cache(db.session)
+        except Exception:
+            app.logger.exception('ETA cache refresh failed')
+        time.sleep(ETA_REFRESH_INTERVAL_SECONDS)
+
+
+@app.before_request
+def _ensure_eta_cache():
+    global _eta_cache_started
+    if _eta_cache_started:
+        return
+    with _eta_cache_lock:
+        if _eta_cache_started:
+            return
+        _eta_cache_started = True
+    threading.Thread(target=_eta_cache_loop, name='eta-cache', daemon=True).start()
+
 
 from api.metrics import metrics_bp
 
@@ -103,7 +156,7 @@ port = 2277
 version = (0, 32)
 agent = '3DS-RPC/'
 
-frontend_uptime = datetime.datetime.now()
+frontend_uptime = datetime.datetime.now(datetime.UTC)
 start_db_time(None, NetworkType.NINTENDO)
 start_db_time(None, NetworkType.PRETENDO)
 
@@ -114,6 +167,7 @@ def handler404(e):
 
 
 from api.webhook import setup_error_webhook
+
 setup_error_webhook(app.logger)
 
 
@@ -151,11 +205,8 @@ def no_store_identity_responses(response):
 
 
 disable_backend_warnings = False
-try:
-    if sys.argv[1] == 'ignoreBackend' and local:
-        disable_backend_warnings = True
-except:
-    pass
+if len(sys.argv) > 1 and sys.argv[1] == 'ignoreBackend' and local:
+    disable_backend_warnings = True
 
 if local:
     HOST = 'http://localhost:2277'
@@ -242,12 +293,12 @@ def cache_titles():
 
     for region in ['US', 'JP', 'GB', 'KR', 'TW']:
         title_database.append(
-            xmltodict.parse(requests.get('https://samurai.ctr.shop.nintendo.net/samurai/ws/%s/titles?shop_id=1&limit=5000&offset=0' % region, verify = False).text)
+            xmltodict.parse(requests.get(f'https://samurai.ctr.shop.nintendo.net/samurai/ws/{region}/titles?shop_id=1&limit=5000&offset=0', verify = False).text)
         )
 
         # Update progress bar as database requests complete
         bar.update(.5 / 5)
-        titles_to_uid += requests.get('https://raw.githubusercontent.com/hax0kartik/3dsdb/master/jsons/list_%s.json' % region).json()
+        titles_to_uid += requests.get(f'https://raw.githubusercontent.com/hax0kartik/3dsdb/master/jsons/list_{region}.json').json()
         bar.update(.5 / 5)
 
     bar.end() # End the progress bar
@@ -363,23 +414,30 @@ def create_user(friend_code, network: NetworkType, add_new_instance: bool):
         db.session.rollback()
     except Exception:
         # Surface unexpected failures to the Discord webhook instead of hiding them.
-        app.logger.error('create_user failed for %s on %s', friend_code, network.lower_name(), exc_info=True)
+        app.logger.exception('create_user failed for %s on %s', friend_code, network.lower_name())
         db.session.rollback()
         raise
 
 
+def oauth_redirect_uri() -> str:
+    base = (HOST or request.url_root).rstrip('/')
+    if not base.startswith(('http://', 'https://')):
+        base = 'https://' + base
+    return base + '/authorize'
+
+
 def fetch_bearer_token(code: str):
     data = {
-        'client_id': '%s' % CLIENT_ID,
-        'client_secret': '%s' % CLIENT_SECRET,
+        'client_id': f'{CLIENT_ID}',
+        'client_secret': f'{CLIENT_SECRET}',
         'grant_type': 'authorization_code',
         'code': code,
-        'redirect_uri': '%s/authorize' % HOST,
+        'redirect_uri': oauth_redirect_uri(),
     }
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, timeout=30)
+    r = requests.post(f'{API_ENDPOINT}/oauth2/token', data=data, headers=headers, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -387,15 +445,15 @@ def fetch_bearer_token(code: str):
 def refresh_bearer(token: str):
     user = user_from_token(token)
     data = {
-        'client_id': '%s' % CLIENT_ID,
-        'client_secret': '%s' % CLIENT_SECRET,
+        'client_id': f'{CLIENT_ID}',
+        'client_secret': f'{CLIENT_SECRET}',
         'grant_type': 'refresh_token',
         'refresh_token': user.refresh_token,
     }
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
     }
-    r = requests.post('%s/oauth2/token' % API_ENDPOINT, data=data, headers=headers, timeout=30)
+    r = requests.post(f'{API_ENDPOINT}/oauth2/token', data=data, headers=headers, timeout=30)
     r.raise_for_status()
     token, user, pfp = create_discord_user('', r.json())
     return token, user, pfp
@@ -441,8 +499,8 @@ def fetch_discord_identity(access_token: str) -> dict:
     """Raises UserError('reauth') if Discord rejects the token, so the caller can
     send the user through a fresh authorization.
     """
-    new = requests.get('%s/users/@me' % API_ENDPOINT, headers={
-        'Authorization': 'Bearer %s' % access_token,
+    new = requests.get(f'{API_ENDPOINT}/users/@me', headers={
+        'Authorization': f'Bearer {access_token}',
     }, timeout=30)
     if new.status_code in (400, 401):
         raise UserError('reauth')
@@ -491,7 +549,7 @@ def store_discord_user(user: dict, tokens: dict, token: str) -> None:
         raise
 
 
-def create_discord_user(code: str, response: dict = None):
+def create_discord_user(code: str, response: dict | None = None):
     if not response:
         try:
             response = fetch_bearer_token(code)
@@ -510,7 +568,7 @@ def create_discord_user(code: str, response: dict = None):
             avatar_extension = 'gif'
         else:
             avatar_extension = 'png'
-        avatar_url = 'https://cdn.discordapp.com/avatars/%s/%s.%s' % (user['id'], user['avatar'], avatar_extension)
+        avatar_url = f'https://cdn.discordapp.com/avatars/{user["id"]}/{user["avatar"]}.{avatar_extension}'
     else:
         avatar_url = ''
 
@@ -549,13 +607,14 @@ def format_relative_time(epoch: int) -> str:
     if elapsed < 86400:
         s = str(datetime.timedelta(seconds=int(elapsed))).split(':')
         return f'{int(s[0])}h, {int(s[1])}m ago'
-    return datetime.datetime.fromtimestamp(epoch).strftime('%b %d, %Y')
+    return datetime.datetime.fromtimestamp(epoch, tz=datetime.UTC).astimezone().strftime('%b %d, %Y')
 
 
 def sidenav():
-    from api.metrics import get_cached_network_metrics
-    from datetime import datetime, timedelta
     import time
+    from datetime import UTC, datetime, timedelta
+
+    from api.metrics import get_cached_network_metrics
     
     nintendo_metrics = get_cached_network_metrics(NetworkType.NINTENDO)
     pretendo_metrics = get_cached_network_metrics(NetworkType.PRETENDO)
@@ -603,7 +662,7 @@ def sidenav():
             return 'Offline'
         return format_uptime(metrics['uptime_seconds'])
     
-    frontend_uptime_seconds = (datetime.now() - frontend_uptime).total_seconds()
+    frontend_uptime_seconds = (datetime.now(UTC) - frontend_uptime).total_seconds()
     
     data = {
         'uptime': format_uptime(frontend_uptime_seconds),
@@ -620,10 +679,10 @@ def user_agent_check():
         raise UserError('this client is invalid')
     try:
         client_version = tuple(int(x) for x in user_agent[len(agent):].split('.'))
-    except:
+    except ValueError:
         raise UserError('this client is invalid')
     if client_version < version:
-        raise UserError('this client is outdated! please update to v%s' % '.'.join(map(str, version)))
+        raise UserError(f'this client is outdated! please update to v{".".join(map(str, version))}')
 
 
 def console_api_key() -> str:
@@ -886,7 +945,7 @@ def register():
             'network': network
         }))
         return response
-    except:
+    except KeyError:
         return make_response(render_template('dist/registerselectnetwork.html'))
 
 
@@ -904,7 +963,7 @@ def connect():
         'authorize_url': 'https://discord.com/oauth2/authorize?' + urlencode({
             'client_id': CLIENT_ID,
             'response_type': 'code',
-            'redirect_uri': '%s/authorize' % HOST,
+            'redirect_uri': oauth_redirect_uri(),
             'scope': DISCORD_SCOPE,
         }, quote_via=quote),
     }
@@ -957,7 +1016,21 @@ def consoles():
         # Stale session cookie; clear it and force a fresh Discord login.
         response = make_response(redirect('/connect'))
         return clear_session_cookies(response)
-    for connection in get_connected_consoles(discord_id):
+    connections = get_connected_consoles(discord_id)
+    etas = {}
+    for network_type in (NetworkType.NINTENDO, NetworkType.PRETENDO):
+        codes = {c['friend_code'] for c in connections if c['network'] == network_type}
+        if not codes:
+            continue
+        cached = get_cached_etas(network_type)
+        etas.update(cached)
+        missing = codes - cached.keys()
+        if missing:
+            etas.update(estimate_next_polls(db.session, network_type, missing))
+
+    eta_generated_at = get_cache_generated_at()
+
+    for connection in connections:
         console = connection['friend_code']
         active = connection['active']
         network_type = connection['network']
@@ -968,6 +1041,21 @@ def consoles():
             .where(Friend.network == network)
         )
         result = db.session.scalar(stmt)
+        eta = etas.get(console)
+        if result and eta_generated_at and result.last_updated > eta_generated_at:
+            eta = estimate_next_polls(db.session, network, {console}).get(console)
+        now = time.time()
+        refresh_pending = bool(result.refresh_requested) if result else False
+        cooldown_remaining = refresh_remaining(result.last_refresh, now) if result else 0
+        refresh_enabled = refresh_available(result.last_refresh, result.refresh_requested, now) if result else False
+        if not result:
+            refresh_text = 'Request Mii Update'
+        elif refresh_pending:
+            refresh_text = 'Update Requested'
+        elif cooldown_remaining > 0:
+            refresh_text = f'Available in ~{max(1, math.ceil(cooldown_remaining / 60))} min'
+        else:
+            refresh_text = 'Request Mii Update'
         if result and result.username:
             username = result.username
         elif result:
@@ -982,6 +1070,9 @@ def consoles():
             'tracked': result is not None,
             'last_updated': result.last_updated if result else 0,
             'last_updated_text': format_relative_time(result.last_updated) if result else 'Never',
+            'next_update_text': format_eta(eta) if result else '',
+            'refresh_enabled': refresh_enabled,
+            'refresh_text': refresh_text,
             # A console the backend can't track (no Friend row, or one that has
             # never been evaluated - health_updated stays 0) has no real health
             # to report, so derive an error marker instead of a misleading "ok".
@@ -1032,7 +1123,7 @@ def user_page(friend_code: str):
             return render_template('dist/404.html')
         if not user_data['User']['username']:
             user_data['User']['username'] = 'Awaiting first sync'
-    except:
+    except Exception:
         return render_template('dist/404.html')
 
     if not user_data['User']['online'] or not user_data['User']['Presence']:
@@ -1045,7 +1136,7 @@ def user_page(friend_code: str):
         if user_data['User'][i] == 0:
             user_data['User'][i] = 'Never'
         elif time.time() - user_data['User'][i] > 86400:
-            user_data['User'][i] = datetime.datetime.fromtimestamp(user_data['User'][i]).strftime('%b %d, %Y')
+            user_data['User'][i] = datetime.datetime.fromtimestamp(user_data['User'][i], tz=datetime.UTC).astimezone().strftime('%b %d, %Y')
         elif time.time() - user_data['User'][i] > 600:
             s = str(datetime.timedelta(seconds=int(time.time() - user_data['User'][i]))).split(':')
             user_data['User'][i] = s[0] + 'h, ' + s[1] + 'm, ' + s[2] + 's ago'
@@ -1077,11 +1168,8 @@ def new_user(friend_code: int, network: int = -1, user_check: bool = True):
         if network == -1:
             network = NetworkType.NINTENDO
 
-            try:
-                request_arg = request.data.decode('utf-8').split(',')[0]
-                network = name_to_network_type(request_arg)
-            except:
-                pass
+            request_arg = request.data.decode('utf-8', 'replace').split(',')[0]
+            network = name_to_network_type(request_arg)
         network = NetworkType(network)
 
         if user_check:
@@ -1195,15 +1283,12 @@ def active_consoles():
 @limiter.limit(toggler_limit)
 def toggler(friend_code: int):
     network = NetworkType.NINTENDO
-    try:
-        body = request.data.decode('utf-8').split(',')
-        if len(body) > 2 and body[2]:
-            network = name_to_network_type(body[2])
-    except:
-        pass
+    body = request.data.decode('utf-8', 'replace').split(',')
+    if len(body) > 2 and body[2]:
+        network = name_to_network_type(body[2])
     try:
         fc = validate_friend_code(friend_code)
-    except:
+    except FriendCodeValidityError:
         return 'failure!\nthat is not a real friendCode!'
     stmt = (
         select(Friend)
@@ -1290,7 +1375,7 @@ def toggler(friend_code: int):
 def deleter(friend_code: int):
     try:
         fc = validate_friend_code(friend_code)
-    except:
+    except FriendCodeValidityError:
         return 'failure!\nthat is not a real friendCode!'
     if not ',' in request.data.decode('utf-8'): # Old API compatiblity. In the future this should be depercated.
         token = request.data.decode('utf-8')
@@ -1320,11 +1405,7 @@ def deleter(friend_code: int):
         .where(DiscordFriends.network == network)
         .where(DiscordFriends.id == discord_id)
     )
-    db.session.execute(
-        delete(Friend)
-        .where(Friend.friend_code == fc)
-        .where(Friend.network == network)
-    )
+    forget_friend(db.session, network, fc)
     db.session.commit()
     return 'success!'
 
@@ -1337,7 +1418,7 @@ def deleter(friend_code: int):
 def refresher(friend_code: int):
     try:
         fc = validate_friend_code(friend_code)
-    except:
+    except FriendCodeValidityError:
         return 'failure!\nthat is not a real friendCode!'
     data = request.data.decode('utf-8').split(',')
     if len(data) < 2:
@@ -1366,6 +1447,12 @@ def refresher(friend_code: int):
     if not friend:
         return 'failure!\nthat console is not currently tracked!'
 
+    if friend.refresh_requested:
+        return 'failure!\nan update is already requested'
+    cooldown_remaining = refresh_remaining(friend.last_refresh, time.time())
+    if cooldown_remaining > 0:
+        minutes = max(1, math.ceil(cooldown_remaining / 60))
+        return f'failure!\ntry again in about {minutes} minutes'
     friend.refresh_requested = True
     db.session.commit()
     return 'success!'
@@ -1434,7 +1521,7 @@ def settings_toggler(which: str):
 @app.route('/cdn/i/<string:file>/', methods=['GET'])
 @limiter.limit(cdn_limit)
 def cdn_image(file: str):
-    response = make_response(requests.get('https://kanzashi-ctr.cdn.nintendo.net/i/%s' % file, verify=False, timeout=30).content)
+    response = make_response(requests.get(f'https://kanzashi-ctr.cdn.nintendo.net/i/{file}', verify=False, timeout=30).content)
     response.headers['Content-Type'] = 'image/jpeg'
     return response
 
@@ -1487,9 +1574,9 @@ def authorize():
         app.logger.exception('Discord authorization failed')
         return redirect('/error?reason=' + quote('We couldn\'t complete Discord authorization. Please try again.'))
     response = make_response(redirect('/consoles'))
-    response.set_cookie('token', token, expires=datetime.datetime.now() + datetime.timedelta(days=30))
-    response.set_cookie('user', user, expires=datetime.datetime.now() + datetime.timedelta(days=30))
-    response.set_cookie('pfp', pfp, expires=datetime.datetime.now() + datetime.timedelta(days=30))
+    response.set_cookie('token', token, expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
+    response.set_cookie('user', user, expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
+    response.set_cookie('pfp', pfp, expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
     return response
 
 
@@ -1499,11 +1586,11 @@ def refresh():
         try:
             token, user, pfp = refresh_bearer(request.cookies['token'])
             response = make_response(redirect('/consoles'))
-            response.set_cookie('token', token, expires=datetime.datetime.now() + datetime.timedelta(days=30))
-            response.set_cookie('user', user, expires=datetime.datetime.now() + datetime.timedelta(days=30))
-            response.set_cookie('pfp', pfp, expires=datetime.datetime.now() + datetime.timedelta(days=30))
+            response.set_cookie('token', token, expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
+            response.set_cookie('user', user, expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
+            response.set_cookie('pfp', pfp, expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
             return response
-        except:
+        except Exception:
             try:
                 delete_discord_user(user_from_token(request.cookies['token']).id)
             except (UserError, KeyError):

@@ -1,10 +1,8 @@
 import datetime
-from typing import Optional
 
-from sqlalchemy import create_engine, delete
-from sqlalchemy.orm import DeclarativeBase, mapped_column, Mapped, Session
-from sqlalchemy.types import DateTime, Integer, String, TypeDecorator, BigInteger
-import sys
+from sqlalchemy import ForeignKey, Index, create_engine, delete
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.types import BigInteger, DateTime, Integer, String, TypeDecorator
 
 from api.networks import NetworkType
 from api.private import DB_URL
@@ -18,7 +16,7 @@ class Config(Base):
     __tablename__ = "config"
 
     network: Mapped[NetworkType] = mapped_column("network", Integer(), primary_key=True)
-    backend_uptime: Mapped[Optional[datetime.datetime]] = mapped_column("backend_uptime", DateTime())
+    backend_uptime: Mapped[datetime.datetime | None] = mapped_column("backend_uptime", DateTime())
 
 
 class NetworkTypeValue(TypeDecorator):
@@ -47,18 +45,43 @@ class Friend(Base):
     upd_id: Mapped[str]
     last_accessed: Mapped[int] = mapped_column("last_accessed", BigInteger(), nullable=False)
     account_creation: Mapped[int] = mapped_column("account_creation", BigInteger(), nullable=False)
-    username: Mapped[Optional[str]]
-    message: Mapped[Optional[str]]
-    mii: Mapped[Optional[str]]
-    joinable: Mapped[Optional[bool]]
-    game_description: Mapped[Optional[str]]
+    username: Mapped[str | None]
+    message: Mapped[str | None]
+    mii: Mapped[str | None]
+    joinable: Mapped[bool | None]
+    game_description: Mapped[str | None]
     last_online: Mapped[int] = mapped_column("last_online", BigInteger(), nullable=False)
     favorite_game: Mapped[int] = mapped_column("favorite_game", BigInteger(), nullable=False)
     refresh_requested: Mapped[bool] = mapped_column("refresh_requested", nullable=False, default=False)
     last_refresh: Mapped[int] = mapped_column("last_refresh", BigInteger(), nullable=False, default=0)
-    # Unix time the backend last processed this console (presence poll). Unlike
-    # `last_accessed`, this advances every loop so the UI can show freshness.
+    # Last presence poll time, advanced every loop.
     last_updated: Mapped[int] = mapped_column("last_updated", BigInteger(), nullable=False, default=0)
+    # Do not attempt another profile scrape before this time after a failure.
+    profile_retry_at: Mapped[int] = mapped_column("profile_retry_at", BigInteger(), nullable=False, default=0)
+
+
+class FriendSchedule(Base):
+    __tablename__ = "friend_schedule"
+    __table_args__ = (Index("friend_schedule_due", "network", "next_due_at"),)
+
+    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), primary_key=True)
+    friend_code: Mapped[str] = mapped_column(
+        "friend_code", String(12), ForeignKey("friends.friend_code", ondelete="CASCADE"), primary_key=True
+    )
+    last_polled_at: Mapped[int] = mapped_column("last_polled_at", BigInteger(), nullable=False, default=0)
+    next_due_at: Mapped[int] = mapped_column("next_due_at", BigInteger(), nullable=False, default=0)
+    consecutive_misses: Mapped[int] = mapped_column("consecutive_misses", Integer(), nullable=False, default=0)
+    updated_at: Mapped[int] = mapped_column("updated_at", BigInteger(), nullable=False, default=0)
+
+
+class RemoteWindow(Base):
+    __tablename__ = "remote_window"
+    __table_args__ = (Index("remote_window_added", "network", "added_at"),)
+
+    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), primary_key=True)
+    friend_code: Mapped[str] = mapped_column("friend_code", String(12), primary_key=True)
+    pid: Mapped[int] = mapped_column("pid", BigInteger(), nullable=False)
+    added_at: Mapped[int] = mapped_column("added_at", BigInteger(), nullable=False, default=0)
 
 
 class BackendMetrics(Base):
@@ -73,12 +96,16 @@ class BackendMetrics(Base):
     last_loop_duration: Mapped[float] = mapped_column("last_loop_duration", nullable=False, default=0.0)
     current_loop_queue: Mapped[int] = mapped_column("current_loop_queue", Integer(), nullable=False, default=0)
     last_loop_queue: Mapped[int] = mapped_column("last_loop_queue", Integer(), nullable=False, default=0)
-    full_loop_current: Mapped[int] = mapped_column("full_loop_current", Integer(), nullable=False, default=0)
-    full_loop_total: Mapped[int] = mapped_column("full_loop_total", Integer(), nullable=False, default=0)
-    full_loop_last_update: Mapped[float] = mapped_column("full_loop_last_update", nullable=False, default=0.0)
-    quick_loop_current: Mapped[int] = mapped_column("quick_loop_current", Integer(), nullable=False, default=0)
-    quick_loop_total: Mapped[int] = mapped_column("quick_loop_total", Integer(), nullable=False, default=0)
-    quick_loop_last_update: Mapped[float] = mapped_column("quick_loop_last_update", nullable=False, default=0.0)
+    fast_loop_current: Mapped[int] = mapped_column("fast_loop_current", Integer(), nullable=False, default=0)
+    fast_loop_total: Mapped[int] = mapped_column("fast_loop_total", Integer(), nullable=False, default=0)
+    fast_loop_skipped: Mapped[int] = mapped_column("fast_loop_skipped", Integer(), nullable=False, default=0)
+    fast_loop_failed: Mapped[int] = mapped_column("fast_loop_failed", Integer(), nullable=False, default=0)
+    fast_loop_last_update: Mapped[float] = mapped_column("fast_loop_last_update", nullable=False, default=0.0)
+    slow_loop_current: Mapped[int] = mapped_column("slow_loop_current", Integer(), nullable=False, default=0)
+    slow_loop_total: Mapped[int] = mapped_column("slow_loop_total", Integer(), nullable=False, default=0)
+    slow_loop_skipped: Mapped[int] = mapped_column("slow_loop_skipped", Integer(), nullable=False, default=0)
+    slow_loop_failed: Mapped[int] = mapped_column("slow_loop_failed", Integer(), nullable=False, default=0)
+    slow_loop_last_update: Mapped[float] = mapped_column("slow_loop_last_update", nullable=False, default=0.0)
     backend_start_time: Mapped[float] = mapped_column("backend_start_time", nullable=False, default=0.0)
     network_status: Mapped[str] = mapped_column("network_status", String(16), nullable=False, default='up')
     loop_mode: Mapped[str] = mapped_column("loop_mode", String(8), nullable=False, default='')
@@ -91,10 +118,9 @@ class DiscordFriends(Base):
     friend_code: Mapped[str] = mapped_column("friend_code", primary_key=True, nullable=False)
     network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue())
     active: Mapped[bool]
-    # Console health marker (ok/degraded/error) from the backend's user loop.
-    # health_reason stores a short code resolved via api.health.HEALTH_REASONS.
+    # Console health code; health_reason maps via api.health.HEALTH_REASONS.
     health: Mapped[str] = mapped_column("health", String(16), nullable=False, default='ok')
-    health_reason: Mapped[Optional[str]] = mapped_column("health_reason", String(32))
+    health_reason: Mapped[str | None] = mapped_column("health_reason", String(32))
     health_updated: Mapped[int] = mapped_column("health_updated", BigInteger(), nullable=False, default=0)
 
 
@@ -104,8 +130,8 @@ class Discord(Base):
     id: Mapped[int] = mapped_column("id", BigInteger(), primary_key=True, nullable=False, unique=True)
     refresh_token: Mapped[str]
     bearer_token: Mapped[str]
-    rpc_session_token: Mapped[Optional[str]]
-    site_session_token: Mapped[Optional[str]] = mapped_column("site_session_token", unique=True)
+    rpc_session_token: Mapped[str | None]
+    site_session_token: Mapped[str | None] = mapped_column("site_session_token", unique=True)
     last_accessed: Mapped[int] = mapped_column("last_accessed", BigInteger(), nullable=False)
     generation_date: Mapped[int] = mapped_column("generation_date", BigInteger(), nullable=False)
     show_profile_button: Mapped[bool] = mapped_column("show_profile_button", nullable=False, default=True)
@@ -114,7 +140,7 @@ class Discord(Base):
     api_key: Mapped[str] = mapped_column("api_key", String(32), nullable=False)
 
 
-def start_db_time(uptime: Optional[datetime.datetime], network_type: NetworkType):
+def start_db_time(uptime: datetime.datetime | None, network_type: NetworkType):
     """Updates the database to track the starting time for the specific backend."""
     engine = create_engine(get_db_url())
     with Session(engine) as session:
