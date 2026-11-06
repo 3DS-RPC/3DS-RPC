@@ -1,10 +1,10 @@
 # Created by Deltaion Lee (MCMi460) on Github
 
-import os, sys
-import time
+import os
+import sys
 import threading
-import traceback
-import typing
+import time
+
 from .love3 import *
 
 try:
@@ -20,7 +20,7 @@ class Color:
     BLUE = '\033[94m'
     GREEN = '\033[92m'
 
-class ProgressBar(): # Written with help from https://stackoverflow.com/a/3160819/11042767
+class ProgressBar: # Written with help from https://stackoverflow.com/a/3160819/11042767
     def __init__(self, width:int = terminalSize):
         self.width = width
         sys.stdout.write('[%s]' % (' ' * self.width))
@@ -52,8 +52,18 @@ class ProgressBar(): # Written with help from https://stackoverflow.com/a/316081
                 time.sleep(0.2)
         sys.stdout.write(']\n')
 
+# Build lookup tables once so per-request title rendering stays O(1).
+def build_title_indexes(titlesToUID, titleDatabase):
+    uid_index = {entry['TitleID']: entry['UID'] for entry in titlesToUID}
+    title_index = {}
+    for region in titleDatabase:
+        for title in region['eshop']['contents']['content']:
+            title_index[title['title']['@id']] = title['title']
+    return uid_index, title_index
+
+
 # Get image url from title ID
-def getTitle(titleID, titlesToUID, titleDatabase):
+def getTitle(titleID, titlesToUID, titleDatabase, uid_index = None, title_index = None):
     _pass = None
 
     uid = None
@@ -73,10 +83,13 @@ def getTitle(titleID, titlesToUID, titleDatabase):
         'release_date_on_eshop': '????-??-??',
         '@id': tid,
     }
-    for game in titlesToUID:
-        if game['TitleID'] == tid:
-            uid = game['UID']
-            break
+    if uid_index is not None:
+        uid = uid_index.get(tid)
+    else:
+        for game in titlesToUID:
+            if game['TitleID'] == tid:
+                uid = game['UID']
+                break
     if not uid:
         if tid == ''.zfill(16):
             _pass = _template
@@ -86,22 +99,26 @@ def getTitle(titleID, titlesToUID, titleDatabase):
         # raise TitleIDMatchError('unknown title id: %s' % tid)
 
     game = None
-    for region in titleDatabase:
-        for title in region['eshop']['contents']['content']:
-            if title['title']['@id'] == uid:
-                game = title['title']
+    if title_index is not None:
+        if uid:
+            game = title_index.get(uid)
+    else:
+        for region in titleDatabase:
+            for title in region['eshop']['contents']['content']:
+                if title['title']['@id'] == uid:
+                    game = title['title']
+                    break
+            if game:
                 break
-        if game:
-            break
     if not game:
         _pass = _template
         # raise GameMatchError('unknown game: %s' % uid)
     if _pass:
         game = _pass
 
-    for key in _template.keys():
-        if not key in game.keys():
-            game[key] = _template[key]
+    for key, value in _template.items():
+        if key not in game:
+            game[key] = value
 
     if game == _template:
         response = getTitleInfo(titleID)

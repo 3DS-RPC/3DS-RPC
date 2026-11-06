@@ -6,12 +6,27 @@ First, copy the template:
 
 ```
 cp api/template.private.py api/private.py
-cp api/template.metrics_keys.json api/template.metrics_keys.json
 ```
 
 Open `api/private.py` and fill in all required secrets and configuration values as described in the file’s comments (e.g., DB_URL, CLIENT_ID, CLIENT_SECRET, HOST, etc).
 
 Adjust the values as needed for your environment.
+
+### Optional: shared bot API key
+
+If you run a trusted read-only integration such as the Discord bot, set a shared `BOT_API_KEY`. Generate one with:
+
+```
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Then add it to `api/private.py`:
+
+```py
+BOT_API_KEY: str = "<generated key>"
+```
+
+This key can look up any tracked friend code, but it is not accepted by write endpoints.
 
 ## 2. (Recommended) Create and activate a Python virtual environment
 
@@ -39,6 +54,22 @@ With the virtual environment activated, run:
 pip install -r requirements.txt
 ```
 
+`requirements.txt` installs NintendoClients from the `3DS-RPC/NintendoClients` fork/
+
+### Development tooling (optional)
+
+To also install the linting tooling, use the development requirements file:
+
+```
+pip install -r requirements-dev.txt
+```
+
+Then check the codebase from the project root:
+
+```
+ruff check .
+```
+
 ## 4. Initialize the database
 
 Run the database reset script from the project root:
@@ -54,6 +85,8 @@ python3 sqlite/reset.py
 ```
 
 This will create or reset the database using the schema in CREATE.sql.
+
+For PostgreSQL, point `DATABASE_URL` at the database and start the web app. On startup it creates a fresh schema at the latest revision, or applies any pending migrations to an existing one; `CREATE.sql` is only needed for the SQLite quickstart.
 
 ---
 

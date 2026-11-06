@@ -6,7 +6,6 @@
 # for essentially making my efforts have worth
 # I would kiss Meleemeister (https://www.3dbrew.org/wiki/Special:Contributions/Meleemeister)
 
-from . import *
 import hashlib
 
 
@@ -31,7 +30,7 @@ def friend_code_to_principal_id(friend_code: str) -> int:
         raise FriendCodeValidityError('an invalid friend code was passed')
 
     # Convert friend_code into hexadecimal
-    checksum_principal = ('%08X' % int(friend_code)).zfill(10)
+    checksum_principal = f'{int(friend_code):08X}'.zfill(10)
     # Remove most significant byte and convert to integer
     principal_id = int(checksum_principal[2:], 16)
     # Separate checksum from checksum_principal

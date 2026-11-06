@@ -1,6 +1,7 @@
 requests
 flask
-nintendoclients>=2.1.0
+# NintendoClients is sourced from the 3DS-RPC fork, pinned to the 4.4.0 API.
+nintendoclients @ git+https://github.com/3DS-RPC/NintendoClients.git@41f848ac38c748a575141eae82a2cde133d2fd90
 flask-limiter>=3.12
 gevent
 SQLAlchemy>=2.0

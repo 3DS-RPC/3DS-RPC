@@ -116,10 +116,10 @@ def repair_uidhmac(pid: int, password: str) -> str:
         try:
             detail = json.loads(error.read().decode("utf-8"))
             message = detail.get("error") or error.reason
-        except Exception:
+        except (ValueError, OSError):
             message = error.reason
         raise SystemExit(f"Repair request failed with HTTP {error.code}: {message}")
-    except Exception as error:
+    except (OSError, ValueError) as error:
         raise SystemExit(f"Could not reach api.pretendo.cc: {error}")
 
     hmac = payload.get("data", {}).get("uidhmac")
@@ -133,6 +133,7 @@ def verify_login(pid: int, hmac: str) -> None:
     sys.path.insert(0, str(REPO_ROOT))
     try:
         from nintendo import nasc
+
         from api import private as cfg
     except ImportError as error:
         print(f"  (skipping verify: {error})")

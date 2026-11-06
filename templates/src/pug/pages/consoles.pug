@@ -34,6 +34,10 @@ block content
                 font-size: .8rem;
                 color: #5b534c;
             }
+            .console-grid .next-update {
+                font-size: .75rem;
+                color: #5b534c;
+            }
             .console-grid > div {
                 display: flex;
                 flex-direction: column;
@@ -119,7 +123,7 @@ block content
             function clicked(active, fc, network) {
                 active = active == 'False';
                 var xmlHttp = new XMLHttpRequest();
-                xmlHttp.open( "POST", "/api/toggle/" + fc, false );
+                xmlHttp.open( "POST", "/api/toggle/" + fc + "/", false );
                 xmlHttp.send( [token, +active, network] );
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
@@ -129,7 +133,7 @@ block content
             }
             function deleteCode(fc, network) {
                 var xmlHttp = new XMLHttpRequest();
-                xmlHttp.open( "POST", "/api/delete/" + fc, false );
+                xmlHttp.open( "POST", "/api/delete/" + fc + "/", false );
                 xmlHttp.send([token, network]);
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
@@ -139,7 +143,7 @@ block content
             }
             function refreshCode(fc, network) {
                 var xmlHttp = new XMLHttpRequest();
-                xmlHttp.open( "POST", "/api/refresh/" + fc, false );
+                xmlHttp.open( "POST", "/api/refresh/" + fc + "/", false );
                 xmlHttp.send([token, network]);
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
@@ -187,12 +191,12 @@ block content
                                     b {{ console['username'] }}
                             .console-refresh
                                 span.console-cell-label Request Mii Update
-                                html {% if console['tracked'] %}
+                                html {% if console['refresh_enabled'] %}
                                 a(href = "javascript:refreshCode({{ console['fc'].replace('-', '') }}, '{{ console['network']}}');" style = 'text-decoration: none;')
-                                    b Request Mii Update
+                                    b {{ console['refresh_text'] }}
                                 html {% else %}
-                                span.text-muted(style = 'cursor: not-allowed;')
-                                    b Request Mii Update
+                                span.text-muted(style = 'cursor: not-allowed; opacity: .65;')
+                                    b {{ console['refresh_text'] }}
                                 html {% endif %}
                             .console-delete
                                 span.console-cell-label Delete
@@ -204,6 +208,9 @@ block content
                                 span(title = '{{ console["last_updated"] }}') {{ console['last_updated_text'] }}
                                 html {% else %}
                                 span Never
+                                html {% endif %}
+                                html {% if console['next_update_text'] %}
+                                div.next-update {{ console['next_update_text'] }}
                                 html {% endif %}
                 html {% endfor %}
         .card.text-center.shadow-lg.border-0.rounded-lg

@@ -14,7 +14,6 @@ __pycache__/
 private*.*
 private*/
 *key*.*
-!api/template.metrics_keys.json
 cache/
 
 # Tests
@@ -29,6 +28,8 @@ setup.py
 
 # DB
 *.db
+*.db-shm
+*.db-wal
 
 # NPM
 node_modules

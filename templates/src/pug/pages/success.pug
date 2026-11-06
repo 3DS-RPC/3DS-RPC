@@ -26,7 +26,7 @@ block content
         var network = '{{ data["network"] }}'
         function addConsole() {
             var xmlHttp = new XMLHttpRequest();
-            xmlHttp.open( "POST", "/api/toggle/" + fc, false );
+            xmlHttp.open( "POST", "/api/toggle/" + fc + "/", false );
             xmlHttp.send( [token, 1, network] );
             if (xmlHttp.responseText !== 'success!') {
                 redirectOnFailure(xmlHttp.responseText);

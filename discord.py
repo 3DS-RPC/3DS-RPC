@@ -1,20 +1,20 @@
-import sys, pickle
-import logging
-import requests
 import json
-from typing import Optional
+import logging
+import pickle
+from dataclasses import dataclass
+from functools import cache
+from urllib.parse import urlparse
+
+import requests
+from requests.exceptions import HTTPError
+from sqlalchemy import and_, create_engine, delete, select, update
+from sqlalchemy.orm import Session
 
 from api.love2 import *
-from api.private import CLIENT_ID, CLIENT_SECRET, HOST
 from api.networks import NetworkType
-
-from sqlalchemy import create_engine, select, update, delete, and_
-from sqlalchemy.orm import Session
-from database import get_db_url, DiscordFriends, Friend
+from api.private import CLIENT_ID, CLIENT_SECRET, HOST
 from database import Discord as DiscordTable
-from dataclasses import dataclass
-from functools import lru_cache
-from requests.exceptions import HTTPError
+from database import DiscordFriends, Friend, get_db_url
 
 API_ENDPOINT: str = 'https://discord.com/api/v10'
 
@@ -72,7 +72,7 @@ def discord_post(url: str, bearer_token: str, data: dict, content_type: str = 'a
 		'Content-Type': content_type,
 	}
 	if bearer_token:
-		headers['Authorization'] = 'Bearer %s' % bearer_token
+		headers['Authorization'] = f'Bearer {bearer_token}'
 	payload = json.dumps(data) if content_type == 'application/json' else data
 
 	response = None
@@ -98,7 +98,7 @@ with open('./cache/databases.dat', 'rb') as file:
 	titleDatabase = t[0]
 	titlesToUID = t[1]
 
-@lru_cache(maxsize=None)
+@cache
 def cached_get_title(title_id: str) -> dict:
 	"""Cached wrapper around getTitle, which does expensive linear scans
 	over the title database on every call. Results are shared and must be
@@ -117,7 +117,7 @@ class UserData:
 	game: dict
 	game_description: str
 	username: str
-	mii_urls: Optional[dict]
+	mii_urls: dict | None
 
 
 class DiscordSession:
@@ -132,7 +132,7 @@ class DiscordSession:
 		)
 		session.commit()
 
-	def create(self, refresh_token: str, session_token: Optional[str]):
+	def create(self, refresh_token: str, session_token: str | None):
 		session.execute(
 			update(DiscordTable)
 			.where(DiscordTable.refresh_token == refresh_token)
@@ -142,6 +142,16 @@ class DiscordSession:
 			)
 		)
 		session.commit()
+
+
+def _absolute_url(value: str) -> bool:
+	if not value:
+		return False
+	try:
+		parsed = urlparse(value)
+	except ValueError:
+		return False
+	return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
 
 
 class APIClient:
@@ -167,29 +177,39 @@ class APIClient:
 			'platform': 'desktop'
 		}
 
-		if game['icon_url']:
-			activity_data['assets']['large_image'] = game['icon_url'].replace('/cdn/', HOST + '/cdn/')
+		base = HOST.rstrip('/')
+		icon_url = game['icon_url']
+		if icon_url and icon_url.startswith('/'):
+			icon_url = base + icon_url if base else ''
+		if _absolute_url(icon_url):
+			activity_data['assets']['large_image'] = icon_url
 			activity_data['assets']['large_text'] = game['name']
 		if user_data.game_description:
 			activity_data['details'] = user_data.game_description
 
 		# Only add a profile button if the user has enabled it.
 		if user_data.username and self.current_user.show_profile_button:
-			profile_url = HOST + '/user/' + user_data.friend_code + '/?network=' + network.lower_name()
-			activity_data['buttons'] = [{
-				'label': 'Profile',
-				'url': profile_url
-			}]
+			profile_url = base + '/user/' + user_data.friend_code + '/?network=' + network.lower_name() if base else ''
+			if _absolute_url(profile_url):
+				activity_data['buttons'] = [{
+					'label': 'Profile',
+					'url': profile_url
+				}]
 
 		# Similarly, only show the user's Mii if enabled.
-		if user_data.username and game['icon_url'] and self.current_user.show_small_image:
-			# Format as a human-readable friend code (XXXX-XXXX-XXXX).
-			user_friend_code = '-'.join(user_data.friend_code[i:i+4] for i in range(0, 12, 4))
-			user_network_name = network.lower_name().capitalize()
-			small_text_detail = f"{user_friend_code} on {user_network_name}"
+		if user_data.username and self.current_user.show_small_image and user_data.mii_urls:
+			face_url = user_data.mii_urls.get('face', '')
+			if _absolute_url(face_url):
+				# Format as a human-readable friend code (XXXX-XXXX-XXXX).
+				user_friend_code = '-'.join(user_data.friend_code[i:i+4] for i in range(0, 12, 4))
+				user_network_name = network.lower_name().capitalize()
+				small_text_detail = f"{user_friend_code} on {user_network_name}"
 
-			activity_data['assets']['small_image'] = user_data.mii_urls['face']
-			activity_data['assets']['small_text'] = small_text_detail
+				activity_data['assets']['small_image'] = face_url
+				activity_data['assets']['small_text'] = small_text_detail
+
+		if not activity_data['assets']:
+			activity_data.pop('assets')
 
 		# Quickly sanitize our activity data by truncating
 		# any text exceeding the maximum field limit, 128 characters.
@@ -198,15 +218,14 @@ class APIClient:
 			if 'image' in key_name:
 				continue
 
-			if isinstance(activity_data[key_name], str):
-				if len(activity_data[key_name]) > 128:
-					activity_data[key_name] = activity_data[key_name][:128]
+			if isinstance(activity_data[key_name], str) and len(activity_data[key_name]) > 128:
+				activity_data[key_name] = activity_data[key_name][:128]
 
 		data = {'activities': [activity_data]}
 		if self.current_user.rpc_session_token:
 			data['token'] = self.current_user.rpc_session_token
 
-		r = discord_post('%s/users/@me/headless-sessions' % API_ENDPOINT, self.current_user.bearer_token, data)
+		r = discord_post(f'{API_ENDPOINT}/users/@me/headless-sessions', self.current_user.bearer_token, data)
 		r.raise_for_status()
 
 		response = r.json()
@@ -227,7 +246,7 @@ class APIClient:
 			'activities': [],
 			'token': self.current_user.rpc_session_token,
 		}
-		r = discord_post('%s/users/@me/headless-sessions' % API_ENDPOINT, self.current_user.bearer_token, data)
+		r = discord_post(f'{API_ENDPOINT}/users/@me/headless-sessions', self.current_user.bearer_token, data)
 
 		try:
 			r.raise_for_status()
@@ -237,13 +256,13 @@ class APIClient:
 			if e.response.status_code == 400:
 				DiscordSession().retire(self.current_user.refresh_token)
 			else:
-				raise e
+				raise
 
 		# Then delete the session
 		data = {
 			'token': self.current_user.rpc_session_token,
 		}
-		r = discord_post('%s/users/@me/headless-sessions/delete' % API_ENDPOINT, self.current_user.bearer_token, data)
+		r = discord_post(f'{API_ENDPOINT}/users/@me/headless-sessions/delete', self.current_user.bearer_token, data)
 
 		try:
 			r.raise_for_status()
@@ -253,19 +272,19 @@ class APIClient:
 			if e.response.status_code == 400:
 				DiscordSession().retire(self.current_user.refresh_token)
 			else:
-				raise e
+				raise
 
 
 	def refresh_bearer(self):
 		log.info('[REFRESH BEARER %s]', self.current_user.id)
 		current_refresh_token = self.current_user.refresh_token
 		data = {
-			'client_id': '%s' % CLIENT_ID,
-			'client_secret': '%s' % CLIENT_SECRET,
+			'client_id': f'{CLIENT_ID}',
+			'client_secret': f'{CLIENT_SECRET}',
 			'grant_type': 'refresh_token',
 			'refresh_token': current_refresh_token,
 		}
-		json_response = discord_post('%s/oauth2/token' % API_ENDPOINT, '', data, 'application/x-www-form-urlencoded')
+		json_response = discord_post(f'{API_ENDPOINT}/oauth2/token', '', data, 'application/x-www-form-urlencoded')
 		json_response.raise_for_status()
 		response = json_response.json()
 

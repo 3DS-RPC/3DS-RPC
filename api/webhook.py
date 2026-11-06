@@ -1,13 +1,12 @@
 import datetime
 import hashlib
 import logging
-import os
 import time
 
 import requests
 from flask import has_request_context, request
 
-import api.private as private
+from api import private
 
 DISCORD_WEBHOOK_URL: str = getattr(private, 'DISCORD_WEBHOOK_URL', '')
 
@@ -72,11 +71,11 @@ class DiscordWebhookHandler(logging.Handler):
                     fields.append({'name': 'User-Agent', 'value': user_agent[:1000], 'inline': True})
             payload = {
                 'embeds': [{
-                    'title': '3DS-RPC %s' % record.levelname,
+                    'title': f'3DS-RPC {record.levelname}',
                     'color': 0xFF0000 if record.levelno >= logging.ERROR else 0xFFA500,
-                    'description': '```py\n%s\n```' % message,
+                    'description': f'```py\n{message}\n```',
                     'fields': fields,
-                    'timestamp': datetime.datetime.utcnow().isoformat(),
+                    'timestamp': datetime.datetime.now(datetime.UTC).isoformat(),
                 }]
             }
             requests.post(self.webhook_url, json=payload, timeout=10)

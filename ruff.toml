@@ -1,0 +1,17 @@
+# See https://docs.astral.sh/ruff/configuration/
+
+target-version = "py312"
+
+[lint]
+ignore = [
+    "BLE001", # blind-except
+    "S110",   # try-except-pass
+    "S112",   # try-except-continue
+]
+
+[lint.per-file-ignores]
+"api/template.private.py" = ["N999"]
+# gevent.monkey.patch_all() must run before flask/requests/sqlalchemy imports.
+"server.py" = ["E402"]
+# FURB166 thinks [2:] strips a "0x" prefix; here it drops the checksum byte.
+"api/love.py" = ["FURB166"]
