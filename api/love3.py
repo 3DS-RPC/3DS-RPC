@@ -16,7 +16,15 @@ from PIL import Image
 
 
 def getTitleData(titleID:hex):
-	data = requests.get(f'https://idbe-ctr.cdn.nintendo.net/icondata/10/{titleID.zfill(16)}.idbe', verify = False).content
+	# Nintendo's legacy CDN certificates are rejected by modern OpenSSL, so
+	# these requests cannot be verified. The URL is a fixed Nintendo host.
+	r = requests.get(
+		f'https://idbe-ctr.cdn.nintendo.net/icondata/10/{titleID.zfill(16)}.idbe',
+		verify = False,
+		timeout = 15,
+	)
+	r.raise_for_status()
+	data = r.content
 
 	IV = unhexlify('A46987AE47D82BB4FA8ABC0450285FA4')
 
@@ -53,9 +61,14 @@ def getTitleInfo(titleID:hex):
 
 	try:
 		data = getTitleData(titleID)
+	except requests.HTTPError as e:
+		# Only a 404 is permanent (homebrew/unknown title). Never cache a
+		# transient failure as "homebrew", or the title stays broken forever.
+		if e.response is not None and e.response.status_code == 404:
+			with open('cache/homebrew' + titleID + '.txt', 'w') as file:
+				file.write('')
+		return None
 	except Exception:
-		with open('cache/homebrew' + titleID + '.txt', 'w') as file:
-			file.write('')
 		return None
 
 	for i in range(3):
