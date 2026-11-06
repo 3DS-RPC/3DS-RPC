@@ -178,7 +178,7 @@ def collect_inputs(paths):
         try:
             data = path.read_bytes()
         except OSError as error:
-            print("warning: could not read %s: %s" % (path, error), file=sys.stderr)
+            print(f"warning: could not read {path}: {error}", file=sys.stderr)
             return
         sources.append((str(path), data))
 
@@ -195,7 +195,7 @@ def collect_inputs(paths):
         elif path.is_file():
             add_file(path)
         else:
-            print("warning: %s does not exist" % path, file=sys.stderr)
+            print(f"warning: {path} does not exist", file=sys.stderr)
 
     return sources
 
@@ -247,9 +247,9 @@ def formatted_lines(record):
     """Build the ready-to-paste api/private.py lines for one record."""
     prefix = NETWORK_PREFIXES[detect_network(record)]
     return [
-        "%s_PID:int = %d" % (prefix, record["pid"]),
-        "%s_NEX_PASSWORD:str = %s" % (prefix, repr(record["nex_password"])),
-        "%s_PID_HMAC:str = %s" % (prefix, repr(record["pid_hmac"])),
+        f"{prefix}_PID:int = {record['pid']}",
+        f"{prefix}_NEX_PASSWORD:str = {record['nex_password']!r}",
+        f"{prefix}_PID_HMAC:str = {record['pid_hmac']!r}",
     ]
 
 
@@ -259,17 +259,17 @@ def display_records(records):
         if number:
             print()
         environment = NASC_ENVIRONMENTS.get(
-            record["nasc_environment"], "Unknown (%d)" % record["nasc_environment"]
+            record["nasc_environment"], f"Unknown ({record['nasc_environment']})"
         )
-        print("Source           : %s" % record["source"])
-        print("  Network        : %s" % NETWORK_LABELS[detect_network(record)])
-        print("  FPAC offset    : 0x%X" % record["offset"])
-        print("  NASC env       : %s" % environment)
-        print("  Local account  : %d" % record["local_account_id"])
-        print("  Local friend c : 0x%016X" % record["friend_code"])
-        print("  NEX PID        : %d (0x%08X)" % (record["pid"], record["pid"]))
-        print("  NEX password   : %s" % record["nex_password"])
-        print("  PID HMAC       : %s" % record["pid_hmac"])
+        print(f"Source           : {record['source']}")
+        print(f"  Network        : {NETWORK_LABELS[detect_network(record)]}")
+        print(f"  FPAC offset    : 0x{record['offset']:X}")
+        print(f"  NASC env       : {environment}")
+        print(f"  Local account  : {record['local_account_id']}")
+        print(f"  Local friend c : 0x{record['friend_code']:016X}")
+        print(f"  NEX PID        : {record['pid']} (0x{record['pid']:08X})")
+        print(f"  NEX password   : {record['nex_password']}")
+        print(f"  PID HMAC       : {record['pid_hmac']}")
         print()
         print("# ---- paste into api/private.py ----")
         for line in formatted_lines(record):
@@ -319,7 +319,7 @@ def ask_network(default):
     print("  2) Nintendo only (prod account)")
     print("  3) Pretendo only (test account)")
     while True:
-        choice = _ask("Choice [%s]: " % default_number)
+        choice = _ask(f"Choice [{default_number}]: ")
         if choice is None:
             return None
         choice = choice.strip().lower()
@@ -384,8 +384,8 @@ def guided_mode(default_network="auto"):
             print("! Found FPAC records, but none had a usable PID/HMAC.")
             continue
         if skipped:
-            print("(ignored %d incomplete or duplicate record(s))" % len(skipped))
-        print("\nFound %d usable account(s)." % len(valid))
+            print(f"(ignored {len(skipped)} incomplete or duplicate record(s))")
+        print(f"\nFound {len(valid)} usable account(s).")
 
         chosen = ask_network(network)
         if chosen is None:
@@ -395,8 +395,7 @@ def guided_mode(default_network="auto"):
         selected = select_records(valid, network)
         if not selected:
             available = ", ".join(sorted({NETWORK_LABELS[detect_network(r)] for r in valid}))
-            print("! No %s account in this save (it has: %s)."
-                  % (NETWORK_LABELS.get(network, network), available))
+            print(f"! No {NETWORK_LABELS.get(network, network)} account in this save (it has: {available}).")
         else:
             print()
             display_records(selected)
@@ -466,7 +465,7 @@ def main(argv=None):
 
     valid, skipped = prepare_records(records)
     if skipped:
-        print("Ignored %d incomplete or duplicate record(s)." % len(skipped), file=sys.stderr)
+        print(f"Ignored {len(skipped)} incomplete or duplicate record(s).", file=sys.stderr)
     if not valid:
         print("No usable account records (missing PID/HMAC).", file=sys.stderr)
         return 1
@@ -474,7 +473,7 @@ def main(argv=None):
     selected = select_records(valid, args.network or "auto")
     if not selected:
         available = ", ".join(sorted({NETWORK_LABELS[detect_network(r)] for r in valid}))
-        print("No matching account. This dump has: %s" % available, file=sys.stderr)
+        print(f"No matching account. This dump has: {available}", file=sys.stderr)
         return 1
 
     if args.json:

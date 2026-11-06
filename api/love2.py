@@ -12,17 +12,17 @@
 # And thank you to HEYimHeroic
 # for https://github.com/HEYimHeroic/mii2studio/blob/master/mii2studio.py
 
-from . import *
-from nintendo import miis
-from nintendo.nex import common
+import io
+from binascii import hexlify
+from struct import pack
 
 # Decrypt Mii QR codes from 3DS / Wii U / Miitomo
 # Credit @jaames
-
 from Crypto.Cipher import AES
-from struct import pack
-from binascii import hexlify
-import io
+from nintendo import miis
+from nintendo.nex import common
+
+from . import *
 
 key = bytes([0x59, 0xFC, 0x81, 0x7E, 0x64, 0x46, 0xEA, 0x61, 0x90, 0x34, 0x7B, 0x20, 0xE9, 0xBD, 0xCE, 0x52])
 
@@ -117,7 +117,7 @@ class FriendInfo(common.Data):
 	def check_required(self, settings, version):
 		for field in ['unk1', 'unk2']:
 			if getattr(self, field) is None:
-				raise ValueError("No value assigned to required field: %s" %field)
+				raise ValueError(f"No value assigned to required field: {field}")
 
 	def load(self, stream, version):
 		self.unk1 = stream.u32()

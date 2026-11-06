@@ -1,4 +1,5 @@
 from enum import IntEnum
+
 from api.public import NINTENDO_BOT_FC, PRETENDO_BOT_FC
 
 
@@ -46,5 +47,5 @@ def name_to_network_type(network_name: str) -> NetworkType:
     try:
         # All enum members are uppercase, so ensure we are, too.
         return NetworkType[network_name.upper()]
-    except:
+    except KeyError:
         return NetworkType.NINTENDO

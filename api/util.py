@@ -1,10 +1,10 @@
 # Created by Deltaion Lee (MCMi460) on Github
 
-import os, sys
-import time
+import os
+import sys
 import threading
-import traceback
-import typing
+import time
+
 from .love3 import *
 
 try:
@@ -20,7 +20,7 @@ class Color:
     BLUE = '\033[94m'
     GREEN = '\033[92m'
 
-class ProgressBar(): # Written with help from https://stackoverflow.com/a/3160819/11042767
+class ProgressBar: # Written with help from https://stackoverflow.com/a/3160819/11042767
     def __init__(self, width:int = terminalSize):
         self.width = width
         sys.stdout.write('[%s]' % (' ' * self.width))
@@ -99,9 +99,9 @@ def getTitle(titleID, titlesToUID, titleDatabase):
     if _pass:
         game = _pass
 
-    for key in _template.keys():
-        if not key in game.keys():
-            game[key] = _template[key]
+    for key, value in _template.items():
+        if key not in game:
+            game[key] = value
 
     if game == _template:
         response = getTitleInfo(titleID)
