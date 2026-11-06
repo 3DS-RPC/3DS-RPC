@@ -38,6 +38,8 @@ With the virtual environment activated, run:
 pip install -r requirements.txt
 ```
 
+`requirements.txt` installs NintendoClients from the `3DS-RPC/NintendoClients` fork/
+
 ### Development tooling (optional)
 
 To also install the linting tooling, use the development requirements file:
