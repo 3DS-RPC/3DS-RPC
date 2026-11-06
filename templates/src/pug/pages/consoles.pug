@@ -123,7 +123,7 @@ block content
             function clicked(active, fc, network) {
                 active = active == 'False';
                 var xmlHttp = new XMLHttpRequest();
-                xmlHttp.open( "POST", "/api/toggle/" + fc, false );
+                xmlHttp.open( "POST", "/api/toggle/" + fc + "/", false );
                 xmlHttp.send( [token, +active, network] );
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
@@ -133,7 +133,7 @@ block content
             }
             function deleteCode(fc, network) {
                 var xmlHttp = new XMLHttpRequest();
-                xmlHttp.open( "POST", "/api/delete/" + fc, false );
+                xmlHttp.open( "POST", "/api/delete/" + fc + "/", false );
                 xmlHttp.send([token, network]);
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
@@ -143,7 +143,7 @@ block content
             }
             function refreshCode(fc, network) {
                 var xmlHttp = new XMLHttpRequest();
-                xmlHttp.open( "POST", "/api/refresh/" + fc, false );
+                xmlHttp.open( "POST", "/api/refresh/" + fc + "/", false );
                 xmlHttp.send([token, network]);
                 if (xmlHttp.responseText == 'success!') {
                     location.reload();
