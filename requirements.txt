@@ -1,6 +1,6 @@
 requests
 flask
-nintendoclients>=2.1.0
+nintendoclients==4.4.0
 flask-limiter>=3.12
 gevent
 SQLAlchemy>=2.0

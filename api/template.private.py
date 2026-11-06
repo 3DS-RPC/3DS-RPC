@@ -65,6 +65,7 @@ DISCORD_WEBHOOK_URL:str = ""
 HOST:str = ""
 # http(s)://subdomain.domain.extension
 # No ending slash!
+# Leave empty to derive the OAuth redirect from the request.
 
 ### DATABASE-SPECIFIC ###
 # The URL of the database to connect to.
@@ -76,5 +77,3 @@ HOST:str = ""
 # SQLAlchemy supports many other databases.
 # Refer to https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls for format.
 DB_URL:str = "sqlite:///./sqlite/fcLibrary.db"
-
-SKIP_RECENT_UPDATES_MINUTES:int = 30
