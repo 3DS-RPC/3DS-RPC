@@ -67,6 +67,14 @@ HOST:str = ""
 # No ending slash!
 # Leave empty to derive the OAuth redirect from the request.
 
+# Shared secret for trusted read-only integrations (e.g. the Discord bot).
+# It may look up any friend code without owning that console. Write
+# endpoints still require the console owner's personal key.
+# Generate one with:
+#   python -c "import secrets; print(secrets.token_hex(32))"
+# Leave empty to disable the bot key.
+BOT_API_KEY:str = ""
+
 ### DATABASE-SPECIFIC ###
 # The URL of the database to connect to.
 #

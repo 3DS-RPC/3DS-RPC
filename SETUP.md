@@ -12,6 +12,22 @@ Open `api/private.py` and fill in all required secrets and configuration values 
 
 Adjust the values as needed for your environment.
 
+### Optional: shared bot API key
+
+If you run a trusted read-only integration such as the Discord bot, set a shared `BOT_API_KEY`. Generate one with:
+
+```
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Then add it to `api/private.py`:
+
+```py
+BOT_API_KEY: str = "<generated key>"
+```
+
+This key can look up any tracked friend code, but it is not accepted by write endpoints.
+
 ## 2. (Recommended) Create and activate a Python virtual environment
 
 Open a terminal in the project root and run:

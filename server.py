@@ -57,6 +57,13 @@ from api.settings import refresh_available, refresh_remaining
 from api.util import ProgressBar, build_title_indexes, getTitle
 from database import Base, Config, Discord, DiscordFriends, Friend, get_db_url
 
+try:
+    from api.private import BOT_API_KEY
+except ImportError:
+    # Optional. private.py files created before BOT_API_KEY existed leave it
+    # disabled; the template defines it for new setups.
+    BOT_API_KEY = ''
+
 
 class UserError(Exception):
     """An error whose message is safe to return to the caller.
@@ -805,10 +812,22 @@ def console_api_key() -> str:
     return request.headers.get('X-API-KEY') or ''
 
 
-def verify_console_key(friend_code: int, network: NetworkType, api_key: str) -> bool:
-    """True if the key's owner has this console (friend code/network) linked."""
+def verify_console_key(
+    friend_code: int,
+    network: NetworkType,
+    api_key: str,
+    allow_bot_key: bool = False,
+) -> bool:
+    """True if the key's owner has this console (friend code/network) linked.
+
+    Trusted read-only integrations (e.g. the Discord bot) may use the shared
+    ``BOT_API_KEY`` to look up any friend code.
+    """
     if not api_key:
         return False
+
+    if allow_bot_key and BOT_API_KEY and api_key == BOT_API_KEY:
+        return True
 
     discord_user = db.session.scalar(
         select(Discord).where(Discord.api_key == api_key)
@@ -831,8 +850,14 @@ def get_presence(friend_code: int, network: NetworkType, is_api: bool):
             # First, run 3DS-RPC client checks.
             user_agent_check()
 
-            # Require a valid console API key for API access.
-            if not verify_console_key(friend_code, network, console_api_key()):
+            # Require a valid console API key for API access. Read-only
+            # lookups may also use the shared bot key.
+            if not verify_console_key(
+                friend_code,
+                network,
+                console_api_key(),
+                allow_bot_key=True,
+            ):
                 raise UserError('invalid console API key')
 
         # Normalize and validate before touching the database.
