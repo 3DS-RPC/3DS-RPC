@@ -11,6 +11,7 @@ import datetime
 import math
 import os
 import pickle
+import re
 import secrets
 import sys
 import threading
@@ -207,7 +208,7 @@ if RATELIMIT_STORAGE_URI == 'memory://':
 
 @app.errorhandler(500)
 def handler500(e):
-    app.logger.exception('Unhandled 500 error', exc_info=e)
+    app.logger.exception('Unhandled 500 error')
     status = getattr(e, 'code', 500) or 500
     try:
         data = sidenav()
@@ -1135,17 +1136,6 @@ def consoles():
         response = make_response(redirect('/connect'))
         return clear_session_cookies(response)
     connections = get_connected_consoles(discord_id)
-    etas = {}
-    for network_type in (NetworkType.NINTENDO, NetworkType.PRETENDO):
-        codes = {c['friend_code'] for c in connections if c['network'] == network_type}
-        if not codes:
-            continue
-        cached = get_cached_etas(network_type)
-        etas.update(cached)
-        missing = codes - cached.keys()
-        if missing:
-            etas.update(estimate_next_polls(db.session, network_type, missing))
-
     eta_generated_at = get_cache_generated_at()
 
     # Fetch every tracked console in one query per network instead of one per
@@ -1163,6 +1153,23 @@ def consoles():
         for row in rows:
             friends_by_console[(network_type, row.friend_code)] = row
 
+    # Build the ETA map with at most one scheduler replay per network.
+    etas = {}
+    for network_type in (NetworkType.NINTENDO, NetworkType.PRETENDO):
+        codes = {c['friend_code'] for c in connections if c['network'] == network_type}
+        if not codes:
+            continue
+        cached = get_cached_etas(network_type)
+        etas.update(cached)
+        needs_update = codes - cached.keys()
+        if eta_generated_at:
+            for code in codes:
+                row = friends_by_console.get((network_type, code))
+                if row is not None and row.last_updated > eta_generated_at:
+                    needs_update.add(code)
+        if needs_update:
+            etas.update(estimate_next_polls(db.session, network_type, needs_update))
+
     for connection in connections:
         console = connection['friend_code']
         active = connection['active']
@@ -1170,8 +1177,6 @@ def consoles():
         network = NetworkType(network_type)
         result = friends_by_console.get((network, console))
         eta = etas.get(console)
-        if result and eta_generated_at and result.last_updated > eta_generated_at:
-            eta = estimate_next_polls(db.session, network, {console}).get(console)
         now = time.time()
         refresh_pending = bool(result.refresh_requested) if result else False
         cooldown_remaining = refresh_remaining(result.last_refresh, now) if result else 0
@@ -1243,9 +1248,6 @@ def user_page(friend_code: str):
         network = name_to_network_type(request.args.get('network'))
 
         normalised = validate_friend_code(friend_code)
-        # Register the friend immediately so the backend starts scraping their
-        # profile as soon as possible, rather than only once a console reports it.
-        create_user(normalised, network, True)
         user_data = get_presence(normalised, network, False)
         if user_data['Exception']:
             return render_template('dist/404.html'), 404
@@ -1667,12 +1669,19 @@ def settings_toggler(which: str):
 
 
 # Make Nintendo's cert a 'secure' cert
+_CDN_FILE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
+
+
 @app.route('/cdn/i/<string:file>/', methods=['GET'])
 @limiter.limit(cdn_limit)
 def cdn_image(file: str):
+    # Reject anything that is not a plain CDN file name: no path separators,
+    # control characters, or query/fragment markers.
+    if not _CDN_FILE_NAME.fullmatch(file):
+        abort(404)
     # Nintendo's legacy CDN certificates are rejected by modern OpenSSL.
     upstream = requests.get(
-        f'https://kanzashi-ctr.cdn.nintendo.net/i/{file}',
+        f'https://kanzashi-ctr.cdn.nintendo.net/i/{quote(file)}',
         verify=False,
         timeout=30,
     )

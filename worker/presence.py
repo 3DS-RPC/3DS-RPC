@@ -54,6 +54,10 @@ async def update_presences(friends_client, session, network: NetworkType, curren
         for pid in current_friend_pids:
             status_code = str(principal_id_to_friend_code(pid)).zfill(12)
             set_console_health(session, status_code, network, HEALTH_ERROR, 'status_read_failed', log_issue=False)
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
         log.warning('[HEALTH] status read failed on %s', network.lower_name())
         raise
 
@@ -87,8 +91,8 @@ async def update_presences(friends_client, session, network: NetworkType, curren
             .where(Friend.network == network)
             .values(
                 online=True,
-                title_id=game.presence.game_key.title_id,
-                upd_id=game.presence.game_key.title_version,
+                title_id=str(game.presence.game_key.title_id),
+                upd_id=str(game.presence.game_key.title_version),
                 joinable=joinable,
                 game_description=game_description,
                 last_online=time.time(),
@@ -107,8 +111,8 @@ async def update_presences(friends_client, session, network: NetworkType, curren
             .where(Friend.network == network)
             .values(
                 online=False,
-                title_id=0,
-                upd_id=0,
+                title_id='0',
+                upd_id='0',
                 joinable=None,
                 game_description=None,
                 last_updated=time.time()
