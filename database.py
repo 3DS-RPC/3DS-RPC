@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import ForeignKey, Index, create_engine, delete
+from sqlalchemy import ForeignKeyConstraint, Index, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.types import BigInteger, DateTime, Integer, String, TypeDecorator
 
@@ -38,8 +38,10 @@ class NetworkTypeValue(TypeDecorator):
 class Friend(Base):
     __tablename__ = "friends"
 
-    friend_code: Mapped[str] = mapped_column("friend_code", primary_key=True, nullable=False, unique=True)
-    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), index=True)
+    # A friend code is only unique within a network: Pretendo and Nintendo
+    # codes share the same format and can collide.
+    friend_code: Mapped[str] = mapped_column("friend_code", String(12), primary_key=True, nullable=False)
+    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), primary_key=True, index=True)
     online: Mapped[bool]
     title_id: Mapped[str]
     upd_id: Mapped[str]
@@ -62,12 +64,17 @@ class Friend(Base):
 
 class FriendSchedule(Base):
     __tablename__ = "friend_schedule"
-    __table_args__ = (Index("friend_schedule_due", "network", "next_due_at"),)
+    __table_args__ = (
+        Index("friend_schedule_due", "network", "next_due_at"),
+        ForeignKeyConstraint(
+            ["network", "friend_code"],
+            ["friends.network", "friends.friend_code"],
+            ondelete="CASCADE",
+        ),
+    )
 
     network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), primary_key=True)
-    friend_code: Mapped[str] = mapped_column(
-        "friend_code", String(12), ForeignKey("friends.friend_code", ondelete="CASCADE"), primary_key=True
-    )
+    friend_code: Mapped[str] = mapped_column("friend_code", String(12), primary_key=True)
     last_polled_at: Mapped[int] = mapped_column("last_polled_at", BigInteger(), nullable=False, default=0)
     next_due_at: Mapped[int] = mapped_column("next_due_at", BigInteger(), nullable=False, default=0)
     consecutive_misses: Mapped[int] = mapped_column("consecutive_misses", Integer(), nullable=False, default=0)
@@ -116,7 +123,7 @@ class DiscordFriends(Base):
 
     id: Mapped[int] = mapped_column(BigInteger(), primary_key=True)
     friend_code: Mapped[str] = mapped_column("friend_code", primary_key=True, nullable=False)
-    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue())
+    network: Mapped[NetworkType] = mapped_column("network", NetworkTypeValue(), primary_key=True)
     active: Mapped[bool]
     # Console health code; health_reason maps via api.health.HEALTH_REASONS.
     health: Mapped[str] = mapped_column("health", String(16), nullable=False, default='ok')
@@ -141,14 +148,23 @@ class Discord(Base):
 
 
 def start_db_time(uptime: datetime.datetime | None, network_type: NetworkType):
-    """Updates the database to track the starting time for the specific backend."""
+    """Updates the database to track the starting time for the specific backend.
+
+    Only the worker owns this value; callers must not use it to mark a network
+    offline just because a process restarted.
+    """
     engine = create_engine(get_db_url())
-    with Session(engine) as session:
-        # TODO: This should be an upsert, not a deletion and insertion.
-        session.execute(delete(Config).where(Config.network == network_type))
-        new_time = Config(network=network_type, backend_uptime=uptime)
-        session.add(new_time)
-        session.commit()
+    try:
+        with Session(engine) as session:
+            config = session.get(Config, network_type)
+            if config is None:
+                config = Config(network=network_type, backend_uptime=uptime)
+                session.add(config)
+            else:
+                config.backend_uptime = uptime
+            session.commit()
+    finally:
+        engine.dispose()
 
 
 def get_db_url() -> str:

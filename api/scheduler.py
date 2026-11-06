@@ -257,7 +257,9 @@ def save_polled(session, network, rows: list[tuple[str, int, int, int]], now: in
     codes = [code for code, *_ in rows]
     existing = set(
         session.scalars(
-            sqlalchemy_select(Friend.friend_code).where(Friend.friend_code.in_(codes))
+            sqlalchemy_select(Friend.friend_code)
+            .where(Friend.friend_code.in_(codes))
+            .where(Friend.network == network)
         ).all()
     )
     rows = [row for row in rows if row[0] in existing]
